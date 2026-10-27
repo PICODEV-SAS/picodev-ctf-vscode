@@ -161,27 +161,62 @@ exports.run = async () => {
     assert.strictEqual(puts().at(-1).arguments.with_agent, true, 'with_agent went back to false');
     fs.rmSync(path.join(root, 'course/notes.txt'));
 
-    // --- check, try, solve (pending, then draft_run every poll), submit, comments
+    // --- check, try, solve (pending, then draft_run every poll), submit, comments; the Author view's state and its
+    // single "Next" after each
+    const labelOf = (i) => (typeof i.label === 'string' ? i.label : i.label.label);
+    const view = async (id) => (await api.views[id].getChildren()).map(labelOf);
+    const authorNext = async () => (await view('author'))[0];
+    const openDraft = async () => {
+      const node = (await api.views.author.getChildren())[1];
+      return [labelOf(node), node.description, ...(await api.views.author.getChildren(node)).map((i) => [labelOf(i), i.description])];
+    };
+    const rev = () => JSON.parse(fs.readFileSync(path.join(root, '.picodev-draft.json'), 'utf8')).revision;
+    assert.strictEqual(await authorNext(), 'Next: check the draft');
+    m.state.lintErrors = ['c-blink/private/target.json: the flag cannot be found in the hidden data'];
     await exec('picodevCtf.check');
     assert.strictEqual(m.calls().at(-1).name, 'draft_lint');
+    assert.strictEqual(await authorNext(), 'Next: fix the check\'s errors, then check again');
+    assert.deepStrictEqual(await openDraft(), ['c-blink', 'draft', [`Revision ${rev()}`, undefined], ['Not solved yet', undefined],
+      ['Check: 1 error(s).', undefined], ['Sheet (challenge.json)', 'done'], ['Starting program', 'to do'],
+      ['Target (private/target.json)', 'in progress'], ['Reference solution (private/)', 'done'], ['Course (course/)', 'done']]);
+    m.state.lintErrors = [];
+    await exec('picodevCtf.check');
+    assert.strictEqual(await authorNext(), 'Next: try on its bench');
     await exec('picodevCtf.try');
     assert.strictEqual(m.calls().at(-1).name, 'draft_test_run');
+    assert.strictEqual(await authorNext(), 'Next: solve (reference solution)');
     const solve = await exec('picodevCtf.solve');
-    const names = m.calls().map((c) => c.name);
+    assert.strictEqual(await authorNext(), 'Next: send to review');
+    assert.deepStrictEqual((await openDraft()).slice(3, 5), [[`Solved at revision ${rev()}`, undefined], ['Check: no error.', undefined]]);
+    const names = m.calls().map((c) => c.name).filter((x) => x !== 'draft_list'); // the Author view reads it
     assert.deepStrictEqual(names.slice(names.lastIndexOf('draft_solve')), ['draft_solve', 'draft_run', 'draft_run', 'draft_run']);
     assert.ok(m.calls().filter((c) => c.name === 'draft_run').every((c) => c.arguments.run === 7 && c.arguments.id === 1));
     assert.strictEqual(solve.status, 'passed');
     assert.strictEqual((await exec('picodevCtf.submit')).version, 1);
+    assert.strictEqual(await authorNext(), 'Next: wait for the review (remarks)');
+    const mine = (await api.views.author.getChildren())[2];
+    assert.strictEqual(labelOf(mine), 'My drafts (3)');
+    const rows = await api.views.author.getChildren(mine);
+    assert.deepStrictEqual(rows.map((i) => [labelOf(i), i.description, i.command.command]),
+      [['c-evil', 'draft · r1', 'picodevCtf.openDraft'], ['c-abs', 'draft · r1', 'picodevCtf.openDraft'],
+        ['c-blink', `review · r${rev()}`, 'picodevCtf.openDraft']]);
     const n = m.calls().length;
     assert.strictEqual((await exec('picodevCtf.comments')).length, 1);
-    assert.deepStrictEqual(m.calls().slice(n).map((c) => c.name), ['review_comments'], 'comments wrote the draft');
+    assert.deepStrictEqual(m.calls().slice(n).map((c) => c.name).filter((x) => x !== 'draft_list'), ['review_comments'], 'comments wrote the draft');
     assert.strictEqual(puts().length, before + 1, 'an unchanged folder was sent before check/try/solve/submit');
 
     // --- draft_folder paths: ../ and absolute refused, nothing written at all
     for (const [slug, outside] of [['c-evil', path.join(ws, 'escape.txt')], ['c-abs', '/tmp/picodev-ctf-abs.txt']]) {
-      answers.showQuickPick.push(slug);
       answers.showOpenDialog.push([vscode.Uri.file(ws)]);
-      await exec('picodevCtf.openDraft');
+      if (slug === 'c-evil') {
+        answers.showQuickPick.push(slug);
+        await exec('picodevCtf.openDraft');
+      } else { // from the Author view's list: no pick
+        const { command, arguments: args } = rows.find((i) => labelOf(i) === slug).command;
+        const picks = asked.showQuickPick.length;
+        await exec(command, ...args);
+        assert.strictEqual(asked.showQuickPick.length, picks);
+      }
       assert.match(lastError(), /outside the draft folder/);
       assert.ok(!fs.existsSync(outside), `${outside} written`);
       assert.ok(!fs.existsSync(path.join(ws, slug, 'ok.txt')), 'files written before the paths were checked');
@@ -222,8 +257,6 @@ exports.run = async () => {
         else fs.writeFileSync(f, String(files[ext]));
       }
     };
-    const labelOf = (i) => (typeof i.label === 'string' ? i.label : i.label.label);
-    const view = async (id) => (await api.views[id].getChildren()).map(labelOf);
     const infos = () => asked.showInformationMessage.map((a) => String(a[0]));
     const nowS = () => Math.floor(Date.now() / 1000);
     let game = await view('game');
@@ -235,7 +268,7 @@ exports.run = async () => {
     assert.ok(actions.includes('Watch the game') && actions.includes('Board console') && !actions.includes('Join a game'), actions.join());
     assert.strictEqual(actions.filter((l) => l.startsWith('Next:')).length, 1);
     const author = await view('author');
-    assert.strictEqual(author[0], 'Next: check the draft');
+    assert.strictEqual(author.filter((l) => l.startsWith('Next:')).join(), 'Next: wait for the review (remarks)');
     assert.strictEqual(author.at(-1), 'picodev.fr');
 
     // --- build: the compiler's lines in the Problems panel, mapped to the workspace; cleared by a successful build

@@ -2,6 +2,20 @@
 
 Picodev CTF for VS Code, newest first. A version is a `vX.Y.Z` tag of this repository.
 
+## 0.3.0
+
+- *Author* view: *My drafts* (`draft_list`; a click opens the draft, no picker), and the open draft
+  folder with its revision, the revision its reference solution passed at (`solved_revision`), this
+  window's last check (errors in the tooltip) and its parts (sheet, starting program, target,
+  reference solution, course) done, in progress or to do, from the folder and the check's errors.
+  One "Next: …" line: send, check, fix the errors, try, solve, send to review, wait for or read the
+  remarks. The view is read again after every author command.
+- Walkthrough *Play a challenge from VS Code*: each step shows its own illustration instead of the
+  pixelated logo. It is a VS Code window in the theme's colours, with the action to take ringed and
+  numbered and a cursor that clicks it, then the result (an SVG animated in a loop,
+  `media/walkthrough/<en|fr>/<step>.svg`, made by `scripts/walkthrough.js`). The illustration and its
+  alternative text follow VS Code's display language (`package.nls.json`, `package.nls.fr.json`).
+
 ## 0.2.0
 
 - A *Picodev CTF* container in the activity bar (new icon: the Picodev card cut into a flag), with

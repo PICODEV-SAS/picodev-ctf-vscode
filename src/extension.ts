@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CtfError, DEFAULT_URL, callTool, checkUrl } from './mcp';
-import { META, Meta, SLUG, readFolder, readMeta, sameFolder, writeFolder, writeMeta } from './draft';
+import { META, Meta, SLUG, readFolder, readMeta, sameFolder, sections, writeFolder, writeMeta } from './draft';
 import { existsSync } from 'fs';
 import {
   FAMILIES, Game, Ran, loginArgs, mapPath, minutesLeft, normCode, parseDiagnostics, picodev, readStatus, slugOf, starterLink,
@@ -24,6 +24,11 @@ const transport = () => (testing ? process.env.PICODEV_CTF_TEST_MCP : undefined)
 let pollMs = 5000;
 let logged = ''; // what the output channel got, for the test only
 let mcpChanged: vscode.EventEmitter<void>;
+let drafts: any[] | undefined; // draft_list, read again after an author command
+// shortcut: this window's last check and passed try per draft id, at the revision they ran on; lost on reload, which
+// the server would fix by keeping them (draft_list has solved_revision only)
+const lints = new Map<number, { revision: number; errors: string[] }>();
+const tried = new Map<number, number>();
 
 const tokenKey = (origin: string) => `token:${origin}`;
 const siteKey = (origin: string) => `site:${origin}`;
@@ -178,20 +183,23 @@ async function newChallenge(): Promise<string | undefined> {
 
 const titleOf = (x: any) => (typeof x === 'string' ? x : x?.[vscode.env.language.startsWith('fr') ? 'fr' : 'en'] ?? x?.fr ?? '');
 
-async function openDraft(): Promise<string | undefined> {
+/** A draft of the Author view's list (`d`), else picked from draft_list. */
+async function openDraft(d?: { id: number; slug: string; with_agent?: boolean }): Promise<string | undefined> {
   const origin = settingUrl();
-  const list: any[] = await call(origin, 'draft_list', {});
-  if (!list.length) {
-    void vscode.window.showInformationMessage(t('No draft yet: "Picodev CTF: New challenge" makes one.'));
-    return;
+  if (!d) {
+    const list: any[] = await call(origin, 'draft_list', {});
+    if (!list.length) {
+      void vscode.window.showInformationMessage(t('No draft yet: "Picodev CTF: New challenge" makes one.'));
+      return;
+    }
+    d = (await vscode.window.showQuickPick(
+      list.map((d) => ({ label: String(d.slug), description: `${d.state} · r${d.revision}`, detail: String(titleOf(d.title)), d })),
+      { title: t('Draft to open') }))?.d;
+    if (!d) return;
   }
-  const item = await vscode.window.showQuickPick(
-    list.map((d) => ({ label: String(d.slug), description: `${d.state} · r${d.revision}`, detail: String(titleOf(d.title)), d })),
-    { title: t('Draft to open') });
-  if (!item) return;
   const parent = await pickParent();
   if (!parent) return;
-  return materialize(origin, item.d, parent);
+  return materialize(origin, d, parent);
 }
 
 /** The draft folder of the active editor (nearest .picodev-draft.json above it), else the workspace's. */
@@ -272,6 +280,7 @@ async function run(tool: 'draft_test_run' | 'draft_solve'): Promise<any> {
         r = await call(meta.url, 'draft_run', { id: meta.id, run: r.run });
       }
       out.show(true);
+      if (tool === 'draft_test_run' && r?.status === 'passed') tried.set(meta.id, meta.revision);
       log(t('Run {0}: {1}', r?.run, r?.status));
       for (const c of r?.checks ?? []) log(`  check ${JSON.stringify(c)}`);
       const events: unknown[] = r?.events ?? [];
@@ -285,6 +294,7 @@ async function check(): Promise<any> {
   const { meta } = await send();
   const r = await call(meta.url, 'draft_lint', { id: meta.id });
   out.show(true);
+  lints.set(meta.id, { revision: meta.revision, errors: (r?.errors ?? []).map(String) });
   log(r?.ok ? t('Check: no error.') : t('Check: {0} error(s).', (r?.errors ?? []).length));
   for (const e of r?.errors ?? []) log(`  - ${e}`);
   return r;
@@ -606,10 +616,12 @@ class Tree implements vscode.TreeDataProvider<vscode.TreeItem> {
   getTreeItem(i: vscode.TreeItem) {
     return i;
   }
-  getChildren(i?: vscode.TreeItem) {
-    return i ? [] : this.items();
+  getChildren(i?: Node) {
+    return i ? i.children ?? [] : this.items();
   }
 }
+
+type Node = vscode.TreeItem & { children?: vscode.TreeItem[] };
 
 function item(label: string, icon: string, command?: string, args?: unknown[]): vscode.TreeItem {
   const i = new vscode.TreeItem(label);
@@ -668,12 +680,70 @@ function gameItems(): vscode.TreeItem[] {
   return items;
 }
 
+/** The author's single next step: the open draft's state on the server, then this window's last check and try. */
+function authorNext(meta: Meta | undefined, row: any, list: any[]): [string, string] {
+  if (!meta) return list.length ? [t('Next: open a draft'), 'picodevCtf.openDraft'] : [t('Next: new challenge'), 'picodevCtf.newChallenge'];
+  if (row?.state === 'changes') return [t('Next: read the reviewers\' remarks'), 'picodevCtf.comments'];
+  if (row?.state === 'review') return [t('Next: wait for the review (remarks)'), 'picodevCtf.comments'];
+  if (row?.state === 'approved' || row?.state === 'published') return [t('Next: new challenge'), 'picodevCtf.newChallenge'];
+  if (row && row.revision !== meta.revision) return [t('Next: send the draft (revision {0} on the server)', row.revision), 'picodevCtf.send'];
+  const lint = lints.get(meta.id);
+  if (lint?.revision !== meta.revision) return [t('Next: check the draft'), 'picodevCtf.check'];
+  if (lint.errors.length) return [t('Next: fix the check\'s errors, then check again'), 'picodevCtf.check'];
+  if (row?.solved_revision === meta.revision) return [t('Next: send to review'), 'picodevCtf.submit'];
+  return tried.get(meta.id) === meta.revision ? [t('Next: solve (reference solution)'), 'picodevCtf.solve']
+    : [t('Next: try on its bench'), 'picodevCtf.try'];
+}
+
+/** The open draft folder: revision, solved_revision, the last check, and its parts done, in progress or to do. */
+async function draftNode(root: string, meta: Meta, row: any): Promise<Node> {
+  const lint = lints.get(meta.id);
+  const errors = lint?.revision === meta.revision ? lint.errors : undefined;
+  const paths = Object.keys((await readFolder(root).catch(() => ({ files: {} }))).files);
+  const labels = {
+    sheet: t('Sheet (challenge.json)'), program: t('Starting program'), target: t('Target (private/target.json)'),
+    solution: t('Reference solution (private/)'), course: t('Course (course/)'),
+  };
+  const progress = { done: ['pass', t('done')], doing: ['edit', t('in progress')], todo: ['circle-large-outline', t('to do')] };
+  const checked = item(errors ? (errors.length ? t('Check: {0} error(s).', errors.length) : t('Check: no error.'))
+    : t('Check: not run at this revision'), errors?.length ? 'error' : 'checklist', 'picodevCtf.check');
+  checked.tooltip = errors?.join('\n');
+  const node: Node = item(row?.slug ?? path.basename(root), 'folder-active');
+  node.description = row?.state;
+  node.collapsibleState = vscode.TreeItemCollapsibleState.Expanded;
+  node.children = [
+    item(t('Revision {0}', meta.revision), 'versions'),
+    ...(row ? [item(row.solved_revision == null ? t('Not solved yet') : t('Solved at revision {0}', row.solved_revision),
+      row.solved_revision === meta.revision ? 'pass' : 'circle-large-outline', 'picodevCtf.solve')] : []),
+    checked,
+    ...sections(paths, errors).map(([s, p]) => Object.assign(item(labels[s], progress[p][0]), { description: progress[p][1] })),
+  ];
+  return node;
+}
+
 async function authorItems(): Promise<vscode.TreeItem[]> {
-  const token = await Promise.resolve().then(() => secrets.get(tokenKey(settingUrl()))).catch(() => undefined);
-  if (!token) return []; // the welcome asks for the token
-  const draft = (await vscode.workspace.findFiles(`**/${META}`, '**/node_modules/**', 1)).length > 0;
+  const origin = await Promise.resolve().then(settingUrl).catch(() => undefined);
+  const token = origin && await secrets.get(tokenKey(origin));
+  if (!origin || !token) return []; // the welcome asks for the token
+  try {
+    drafts ??= await call(origin, 'draft_list', {}) as any[];
+  } catch (e) {
+    log(`! draft_list: ${e instanceof CtfError ? e.code : e}`);
+  }
+  const list = drafts ?? [];
+  const found = (await vscode.workspace.findFiles(`**/${META}`, '**/node_modules/**', 1))[0];
+  const root = found && path.dirname(found.fsPath);
+  const meta = root ? await readMeta(root).catch(() => undefined) : undefined;
+  const row = meta?.url === origin ? list.find((d) => d.id === meta.id) : undefined;
+  const mine: Node = item(t('My drafts ({0})', list.length), 'list-unordered');
+  mine.collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+  mine.children = list.map((d) => Object.assign(item(String(d.slug), 'file-code', 'picodevCtf.openDraft', [d]),
+    { description: `${d.state} · r${d.revision}`, tooltip: String(titleOf(d.title)) }));
+  const draft = !!root;
   return [
-    nextItem(draft ? [t('Next: check the draft'), 'picodevCtf.check'] : [t('Next: new challenge'), 'picodevCtf.newChallenge']),
+    nextItem(authorNext(meta, row, list)),
+    ...(root && meta ? [await draftNode(root, meta, row)] : []),
+    ...(list.length ? [mine] : []),
     item(t('New challenge'), 'new-folder', 'picodevCtf.newChallenge'),
     item(t('Open a draft'), 'folder-opened', 'picodevCtf.openDraft'),
     ...(draft ? [
@@ -741,25 +811,37 @@ export function activate(context: vscode.ExtensionContext) {
 
   const views = { actions: new Tree(actionItems), game: new Tree(gameItems), courses: new Tree(() => []), author: new Tree(authorItems) };
   trees.push(...Object.values(views));
+  const authorChanged = () => {
+    drafts = undefined;
+    views.author.changed.fire();
+  };
+  // the Author view read again after an author command, whatever its outcome
+  const authored = (run: (...args: any[]) => Promise<unknown>) => async (...args: any[]) => {
+    try {
+      return await run(...args);
+    } finally {
+      authorChanged();
+    }
+  };
   const timer = setInterval(() => void refreshStatus(), STATUS_MS);
   context.subscriptions.push(
     out, status, problems, mcpChanged, { dispose: () => clearInterval(timer) },
     ...Object.entries(views).map(([id, tree]) => vscode.window.registerTreeDataProvider(`picodevCtf.${id}`, tree)),
-    mcpChanged.event(() => views.author.changed.fire()),
+    mcpChanged.event(authorChanged),
     vscode.workspace.onDidChangeWorkspaceFolders(() => views.author.changed.fire()),
     vscode.window.registerUriHandler({ handleUri: (uri) => void guarded(handleUri)(uri) }),
     vscode.lm.registerMcpServerDefinitionProvider('picodev-ctf-author', mcp),
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('picodevCtf.url') && mcpChanged.fire()),
     command('picodevCtf.setToken', setToken),
     command('picodevCtf.forgetToken', forgetToken),
-    command('picodevCtf.newChallenge', newChallenge),
-    command('picodevCtf.openDraft', openDraft),
-    command('picodevCtf.send', async () => (await send()).meta),
-    command('picodevCtf.check', check),
-    command('picodevCtf.try', () => run('draft_test_run')),
-    command('picodevCtf.solve', () => run('draft_solve')),
-    command('picodevCtf.submit', submit),
-    command('picodevCtf.comments', comments),
+    command('picodevCtf.newChallenge', authored(newChallenge)),
+    command('picodevCtf.openDraft', authored(openDraft)),
+    command('picodevCtf.send', authored(async () => (await send()).meta)),
+    command('picodevCtf.check', authored(check)),
+    command('picodevCtf.try', authored(() => run('draft_test_run'))),
+    command('picodevCtf.solve', authored(() => run('draft_solve'))),
+    command('picodevCtf.submit', authored(submit)),
+    command('picodevCtf.comments', authored(comments)),
     command('picodevCtf.login', login),
     command('picodevCtf.joinPending', async () => (pending ? login(pending.code) : login())),
     command('picodevCtf.launch', launch),

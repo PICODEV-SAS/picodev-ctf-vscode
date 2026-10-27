@@ -2,7 +2,7 @@
   "name": "picodev-ctf",
   "displayName": "Picodev CTF",
   "description": "Play Picodev CTF challenges from VS Code (join, build, send to the bench, watch the game) and write challenges (author tools).",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "picodev",
   "icon": "media/logo.png",
   "galleryBanner": {
@@ -309,8 +309,8 @@
             "title": "%walkthrough.docker.title%",
             "description": "%walkthrough.docker.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.docker.svg%",
+              "altText": "%walkthrough.docker.alt%"
             },
             "completionEvents": [
               "extensionInstalled:ms-vscode-remote.remote-containers"
@@ -321,8 +321,8 @@
             "title": "%walkthrough.launch.title%",
             "description": "%walkthrough.launch.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.launch.svg%",
+              "altText": "%walkthrough.launch.alt%"
             },
             "completionEvents": [
               "onCommand:picodevCtf.launch"
@@ -333,8 +333,8 @@
             "title": "%walkthrough.open.title%",
             "description": "%walkthrough.open.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.open.svg%",
+              "altText": "%walkthrough.open.alt%"
             },
             "completionEvents": [
               "onCommand:picodevCtf.openStarter",
@@ -347,8 +347,8 @@
             "title": "%walkthrough.build.title%",
             "description": "%walkthrough.build.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.build.svg%",
+              "altText": "%walkthrough.build.alt%"
             },
             "completionEvents": [
               "onCommand:picodevCtf.build",
@@ -360,8 +360,8 @@
             "title": "%walkthrough.console.title%",
             "description": "%walkthrough.console.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.console.svg%",
+              "altText": "%walkthrough.console.alt%"
             },
             "completionEvents": [
               "onCommand:picodevCtf.console"
@@ -372,8 +372,8 @@
             "title": "%walkthrough.flag.title%",
             "description": "%walkthrough.flag.description%",
             "media": {
-              "image": "media/logo.png",
-              "altText": "Picodev CTF"
+              "svg": "%walkthrough.flag.svg%",
+              "altText": "%walkthrough.flag.alt%"
             },
             "completionEvents": [
               "onCommand:picodevCtf.gameScreen"

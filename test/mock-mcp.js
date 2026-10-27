@@ -22,8 +22,10 @@ async function start() {
       [67, { id: 67, slug: 'c-abs', state: 'draft', revision: 1, with_agent: true, files: { 'ok.txt': 'y', '/tmp/picodev-ctf-abs.txt': 'x' } }],
     ]),
     runPolls: 0,
+    lintErrors: [], // what draft_lint answers
   };
-  const row = (d) => ({ id: d.id, slug: d.slug, state: d.state, revision: d.revision, title: { fr: 'T', en: 'T' }, with_agent: d.with_agent });
+  const row = (d) => ({ id: d.id, slug: d.slug, state: d.state, revision: d.revision, title: { fr: 'T', en: 'T' }, with_agent: d.with_agent,
+    solved_revision: d.solved_revision ?? null });
   const own = (id) => {
     const d = state.drafts.get(id);
     if (!d) throw new Error('unknown_draft');
@@ -56,12 +58,18 @@ async function start() {
       d.with_agent = d.with_agent || a.with_agent;
       return { revision: d.revision, with_agent: d.with_agent };
     },
-    draft_lint: () => ({ ok: true, errors: [] }),
+    draft_lint: () => ({ ok: !state.lintErrors.length, errors: state.lintErrors }),
     draft_test_run: () => ({ run: 6, status: 'passed', checks: [{ id: 'flag', ok: true }], events: [{ t: 0, kind: 'boot' }], provenance: null }),
     draft_solve: () => ({ run: 7, status: 'pending', checks: [], events: [], provenance: null }),
-    draft_run: (a) => (++state.runPolls < 3 ? { run: a.run, status: 'pending', checks: [], events: [] }
-      : { run: a.run, status: 'passed', checks: [{ id: 'flag', ok: true }], events: [], provenance: 'hello' }),
-    draft_submit: () => ({ version: 1 }),
+    draft_run: (a) => {
+      if (++state.runPolls < 3) return { run: a.run, status: 'pending', checks: [], events: [] };
+      if (a.run === 7) own(a.id).solved_revision = own(a.id).revision; // a passed solve, as the service's
+      return { run: a.run, status: 'passed', checks: [{ id: 'flag', ok: true }], events: [], provenance: 'hello' };
+    },
+    draft_submit: (a) => {
+      own(a.id).state = 'review';
+      return { version: 1 };
+    },
     review_comments: () => [{ verdict: 'changes', body: 'Say "simulated".\nThanks.', at: '2026-10-27', by: 'picodev' }],
   };
 

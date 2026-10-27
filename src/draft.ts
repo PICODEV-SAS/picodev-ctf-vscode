@@ -126,3 +126,30 @@ export function sameFolder(local: Record<string, string>, server: Record<string,
     }
   });
 }
+
+export type Section = 'sheet' | 'program' | 'target' | 'solution' | 'course';
+export type Progress = 'done' | 'doing' | 'todo';
+
+/** The paths of the folder that make each part of a draft (draft_folder's layout). */
+const HAS: Record<Section, (p: string) => boolean> = {
+  sheet: (p) => p === 'challenge.json',
+  program: (p) => p !== 'challenge.json' && !/^(private|course)\//.test(p),
+  target: (p) => p === 'private/target.json',
+  solution: (p) => p.startsWith('private/') && p !== 'private/target.json',
+  course: (p) => p.startsWith('course/'),
+};
+/** The part a draft_lint error names, by tools.check's `where` (first match); any other error is the sheet's. */
+const NAMED: [Section, RegExp][] = [
+  ['course', /^course /], ['target', /\/private\/target\.json\b/], ['solution', /\bprivate\/solution/],
+  ['sheet', /challenge\.json/], ['program', /\.(ino|c|h|cpp)\b/],
+];
+
+/**
+ * Each part of a draft: to do when the folder has none of it, in progress while the last check names it or has not
+ * run at this revision (errors undefined), else done. The course is optional: listed once the folder has one.
+ */
+export function sections(paths: string[], errors: string[] | undefined): [Section, Progress][] {
+  const named = new Set(errors?.map((e) => NAMED.find(([, re]) => re.test(e))?.[0] ?? 'sheet'));
+  return (Object.keys(HAS) as Section[]).filter((s) => s !== 'course' || paths.some(HAS.course)).map((s) =>
+    [s, !paths.some(HAS[s]) ? 'todo' : !errors || named.has(s) ? 'doing' : 'done']);
+}
