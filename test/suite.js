@@ -1,0 +1,221 @@
+// Runs inside the test VS Code: the author's commands against a local mock MCP (started here, in the extension host),
+// the player's commands against a fake picodev (test/run.js). The dialogs are stubbed with scripted answers.
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vscode = require('vscode');
+const mock = require('./mock-mcp');
+
+const TOKEN = mock.TOKEN;
+const stubs = [];
+function stub(obj, name, fn) {
+  const orig = obj[name];
+  obj[name] = fn;
+  stubs.push(() => (obj[name] = orig));
+}
+/** Scripted answers per dialog; what each dialog was asked is kept in `asked`. */
+const answers = { showInputBox: [], showQuickPick: [], showOpenDialog: [], showWarningMessage: [] };
+const asked = { showInputBox: [], showQuickPick: [], showOpenDialog: [], showWarningMessage: [], showErrorMessage: [] };
+for (const name of Object.keys(answers)) {
+  stub(vscode.window, name, async (...args) => {
+    asked[name].push(args);
+    const a = answers[name].shift();
+    if (name === 'showQuickPick' && a !== undefined) return (await args[0]).find((i) => (i.label ?? i) === a);
+    return typeof a === 'function' ? a(...args) : a;
+  });
+}
+stub(vscode.window, 'showErrorMessage', async (...args) => void asked.showErrorMessage.push(args));
+stub(vscode.window, 'showInformationMessage', async () => undefined);
+const opened = [];
+stub(vscode.env, 'openExternal', async (uri) => void opened.push(uri.toString(true)) || true);
+
+const exec = (id, ...args) => vscode.commands.executeCommand(id, ...args);
+const lastError = () => String(asked.showErrorMessage.at(-1)?.[0] ?? '');
+
+exports.run = async () => {
+  const m = await mock.start();
+  process.env.PICODEV_CTF_TEST_MCP = m.url; // the extension's transport in a test run; the address stays https
+  const ws = vscode.workspace.workspaceFolders[0].uri.fsPath;
+  const config = vscode.workspace.getConfiguration('picodevCtf');
+  try {
+    const api = await vscode.extensions.getExtension('picodev.picodev-ctf').activate();
+
+    // --- http:// refused: nothing asked, nothing sent
+    await config.update('url', 'http://ctf.test', vscode.ConfigurationTarget.Global);
+    await exec('picodevCtf.setToken');
+    assert.strictEqual(asked.showInputBox.length, 0);
+    assert.match(lastError(), /https:\/\//);
+    await config.update('url', 'https://ctf.test/path', vscode.ConfigurationTarget.Global);
+    await exec('picodevCtf.newChallenge');
+    assert.strictEqual(asked.showQuickPick.length, 0);
+    assert.strictEqual(m.state.requests.length, 0, 'a request left for an address that is not https');
+
+    // --- the token: verified by draft_list, kept in secret storage only
+    await config.update('url', 'https://ctf.test', vscode.ConfigurationTarget.Global);
+    answers.showInputBox.push(TOKEN);
+    await exec('picodevCtf.setToken');
+    assert.deepStrictEqual(m.calls().map((c) => c.name), ['draft_list']);
+    assert.strictEqual(m.state.requests[0].headers['x-ctf-author-token'], TOKEN);
+    assert.strictEqual(m.state.requests[0].headers.authorization, undefined);
+
+    // the MCP server definition carries no token; it gets it when VS Code starts the server
+    const [def] = await api.mcp.provideMcpServerDefinitions();
+    assert.strictEqual(def.uri.toString(), 'https://ctf.test/mcp/author');
+    assert.ok(!JSON.stringify(def).includes(TOKEN), 'a provided definition holds the token');
+    assert.strictEqual((await api.mcp.resolveMcpServerDefinition(def)).headers['X-CTF-Author-Token'], TOKEN);
+
+    // --- new challenge: template, folder written, .picodev-draft.json without token
+    answers.showQuickPick.push('nano');
+    answers.showInputBox.push('c-blink');
+    answers.showOpenDialog.push([vscode.Uri.file(ws)]);
+    const root = await exec('picodevCtf.newChallenge');
+    assert.strictEqual(root, path.join(ws, 'c-blink'));
+    const created = m.calls().find((c) => c.name === 'draft_create').arguments;
+    assert.deepStrictEqual(created, { slug: 'c-blink', platform: 'nano', template: true });
+    assert.match(fs.readFileSync(path.join(root, 'challenge.json'), 'utf8'), /c-blink/);
+    assert.ok(fs.existsSync(path.join(root, 'private/target.json')));
+    assert.ok(!fs.existsSync(path.join(root, '.git')), 'a git repository was made');
+    assert.match(String(asked.showWarningMessage.at(-1)[0]), /hidden part/);
+    const meta = JSON.parse(fs.readFileSync(path.join(root, '.picodev-draft.json'), 'utf8'));
+    assert.deepStrictEqual(meta, { url: 'https://ctf.test', id: 1, revision: 2, with_agent: false });
+    // no template for this platform: the server's unknown_template, nothing written
+    answers.showQuickPick.push('esp32');
+    answers.showInputBox.push('c-esp');
+    answers.showOpenDialog.push([vscode.Uri.file(ws)]);
+    await exec('picodevCtf.newChallenge');
+    assert.match(lastError(), /No template/);
+    assert.ok(!fs.existsSync(path.join(ws, 'c-esp')));
+
+    // --- send: an unchanged folder is not sent again; then only text files, no hidden, build* or links
+    await vscode.window.showTextDocument(vscode.Uri.file(path.join(root, 'challenge.json')));
+    const puts = () => m.calls().filter((c) => c.name === 'draft_put_folder');
+    await exec('picodevCtf.send');
+    assert.strictEqual(puts().length, 0, 'an unchanged folder was sent');
+    fs.writeFileSync(path.join(root, 'blink/blink.ino'), 'void setup() { /* mine */ }\nvoid loop() {}\n');
+    fs.mkdirSync(path.join(root, '.vscode'));
+    fs.writeFileSync(path.join(root, '.vscode/x.json'), '{}');
+    fs.mkdirSync(path.join(root, 'build'));
+    fs.writeFileSync(path.join(root, 'build/a.hex'), ':00');
+    fs.writeFileSync(path.join(root, 'build.log'), 'log');
+    fs.writeFileSync(path.join(root, 'img.bin'), Buffer.from([0, 1, 2, 255]));
+    fs.symlinkSync('/etc/hostname', path.join(root, 'link.txt'));
+    await exec('picodevCtf.send');
+    assert.strictEqual(puts().length, 1);
+    const sent = puts()[0].arguments;
+    assert.deepStrictEqual(Object.keys(sent.files).sort(),
+      ['blink/blink.ino', 'challenge.json', 'course/01-intro.fr.md', 'course/course.json', 'private/solution/blink.ino', 'private/target.json']);
+    assert.strictEqual(sent.with_agent, false);
+    assert.strictEqual(sent.revision, 2);
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, '.picodev-draft.json'), 'utf8')).revision, 3);
+
+    // --- stale: the author is asked, overwrite sends again on the server's revision
+    const d = m.state.drafts.get(1);
+    d.revision = 5; // someone else wrote, with an agent
+    d.with_agent = true;
+    fs.writeFileSync(path.join(root, 'course/01-intro.fr.md'), '# Intro, mine\n');
+    answers.showWarningMessage.push('Overwrite the server');
+    const warned = asked.showWarningMessage.length;
+    await exec('picodevCtf.send');
+    assert.strictEqual(asked.showWarningMessage.length, warned + 1, 'stale did not ask');
+    assert.deepStrictEqual(asked.showWarningMessage.at(-1).slice(2), ['Overwrite the server', 'Reload from the server']);
+    assert.strictEqual(puts().at(-1).arguments.revision, 5);
+    assert.strictEqual(d.revision, 6);
+    assert.strictEqual(d.files['course/01-intro.fr.md'], '# Intro, mine\n');
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, '.picodev-draft.json'), 'utf8')).with_agent, true);
+    // reload: the server's folder replaces the local one, nothing is sent
+    d.revision = 9;
+    d.files = { ...d.files, 'course/01-intro.fr.md': '# Intro, theirs\n' };
+    delete d.files['blink/blink.ino'];
+    fs.writeFileSync(path.join(root, 'course/01-intro.fr.md'), '# Intro, mine again\n');
+    answers.showWarningMessage.push('Reload from the server');
+    const before = puts().length;
+    await exec('picodevCtf.send');
+    assert.strictEqual(puts().length, before);
+    assert.strictEqual(fs.readFileSync(path.join(root, 'course/01-intro.fr.md'), 'utf8'), '# Intro, theirs\n');
+    assert.ok(!fs.existsSync(path.join(root, 'blink/blink.ino')), 'a file the server no longer has stayed');
+    assert.strictEqual(JSON.parse(fs.readFileSync(path.join(root, '.picodev-draft.json'), 'utf8')).revision, 9);
+    // no answer: nothing sent
+    d.revision = 10;
+    await exec('picodevCtf.send');
+    assert.strictEqual(puts().length, before);
+    // a link planted in the folder, pointing out of the draft: a reload refuses it, nothing is created outside
+    const outside = fs.mkdtempSync(path.join(path.dirname(ws), 'outside-'));
+    fs.rmSync(path.join(root, 'blink'), { recursive: true, force: true });
+    fs.symlinkSync(outside, path.join(root, 'blink'));
+    d.files = { ...d.files, 'blink/blink.ino': 'x', 'blink/deep/more.ino': 'y', 'course/01-intro.fr.md': '# changed\n' };
+    answers.showWarningMessage.push('Reload from the server');
+    await exec('picodevCtf.send');
+    assert.match(lastError(), /outside the draft folder/);
+    assert.deepStrictEqual(fs.readdirSync(outside), [], 'written through a link');
+    assert.strictEqual(fs.readFileSync(path.join(root, 'course/01-intro.fr.md'), 'utf8'), '# Intro, theirs\n', 'written before the check');
+    fs.unlinkSync(path.join(root, 'blink'));
+    d.files = { ...d.files, 'course/01-intro.fr.md': '# Intro, theirs\n' };
+    delete d.files['blink/blink.ino'];
+    delete d.files['blink/deep/more.ino'];
+    // a file the service has no place for: its bad_path, shown
+    d.revision = 9;
+    fs.writeFileSync(path.join(root, 'course/notes.txt'), 'n');
+    await exec('picodevCtf.send');
+    assert.match(lastError(), /no place in a draft/);
+    assert.strictEqual(puts().at(-1).arguments.with_agent, true, 'with_agent went back to false');
+    fs.rmSync(path.join(root, 'course/notes.txt'));
+
+    // --- check, try, solve (pending, then draft_run every poll), submit, comments
+    await exec('picodevCtf.check');
+    assert.strictEqual(m.calls().at(-1).name, 'draft_lint');
+    await exec('picodevCtf.try');
+    assert.strictEqual(m.calls().at(-1).name, 'draft_test_run');
+    const solve = await exec('picodevCtf.solve');
+    const names = m.calls().map((c) => c.name);
+    assert.deepStrictEqual(names.slice(names.lastIndexOf('draft_solve')), ['draft_solve', 'draft_run', 'draft_run', 'draft_run']);
+    assert.ok(m.calls().filter((c) => c.name === 'draft_run').every((c) => c.arguments.run === 7 && c.arguments.id === 1));
+    assert.strictEqual(solve.status, 'passed');
+    assert.strictEqual((await exec('picodevCtf.submit')).version, 1);
+    const n = m.calls().length;
+    assert.strictEqual((await exec('picodevCtf.comments')).length, 1);
+    assert.deepStrictEqual(m.calls().slice(n).map((c) => c.name), ['review_comments'], 'comments wrote the draft');
+    assert.strictEqual(puts().length, before + 1, 'an unchanged folder was sent before check/try/solve/submit');
+
+    // --- draft_folder paths: ../ and absolute refused, nothing written at all
+    for (const [slug, outside] of [['c-evil', path.join(ws, 'escape.txt')], ['c-abs', '/tmp/picodev-ctf-abs.txt']]) {
+      answers.showQuickPick.push(slug);
+      answers.showOpenDialog.push([vscode.Uri.file(ws)]);
+      await exec('picodevCtf.openDraft');
+      assert.match(lastError(), /outside the draft folder/);
+      assert.ok(!fs.existsSync(outside), `${outside} written`);
+      assert.ok(!fs.existsSync(path.join(ws, slug, 'ok.txt')), 'files written before the paths were checked');
+    }
+
+    // --- the token: never in the workspace, the settings, the log or a request's address or body
+    const all = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory() ? all(path.join(dir, e.name)) : e.isFile() ? [path.join(dir, e.name)] : []);
+    assert.deepStrictEqual(all(ws).filter((f) => fs.readFileSync(f).includes(TOKEN)), []);
+    assert.ok(!JSON.stringify(config.inspect('url')).includes(TOKEN));
+    assert.ok(!api.logText().includes(TOKEN));
+    assert.ok(api.logText().includes('Check: no error.'));
+    assert.ok(m.state.requests.every((r) => !r.url.includes(TOKEN) && !r.body.includes(TOKEN)));
+
+    // --- player: picodev by execFile, the login code validated first
+    const fake = () => (fs.existsSync(process.env.PICODEV_FAKE_LOG) ? fs.readFileSync(process.env.PICODEV_FAKE_LOG, 'utf8') : '');
+    for (const bad of ['AB;rm -rf', '$(id)ABC', 'ABCDEFGI', 'AB12CD3', '']) {
+      await exec('picodevCtf.login', bad);
+      assert.match(lastError(), /8 characters/, bad);
+    }
+    assert.ok(!fake().includes('login'), 'picodev ran for a refused code');
+    assert.strictEqual(await exec('picodevCtf.login', 'ab12cd34'), 0);
+    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nAB12CD34\n--$/m);
+    assert.strictEqual(await exec('picodevCtf.playerSend'), 0);
+    assert.match(fake(), /^send\n--$/m);
+    await exec('picodevCtf.status');
+    assert.match(api.statusText(), /^\$\(target\) blink-1 · 1\/3 · 1[01] min$/);
+    await exec('picodevCtf.openStarter', 'esp32');
+    assert.deepStrictEqual(opened, ['vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/PICODEV-SAS/picodev-starter-esp32']);
+    await exec('picodevCtf.openStarter', 'x&y');
+    assert.strictEqual(opened.length, 1);
+    console.log('suite: ok');
+  } finally {
+    await config.update('url', undefined, vscode.ConfigurationTarget.Global);
+    m.close();
+    stubs.forEach((undo) => undo());
+  }
+};

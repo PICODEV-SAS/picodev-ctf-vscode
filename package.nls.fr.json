@@ -1,0 +1,17 @@
+{
+  "command.setToken": "Enregistrer le jeton d'auteur",
+  "command.forgetToken": "Oublier le jeton d'auteur",
+  "command.newChallenge": "Nouveau défi",
+  "command.openDraft": "Ouvrir un brouillon",
+  "command.send": "Envoyer le brouillon",
+  "command.check": "Vérifier le brouillon",
+  "command.try": "Essayer le brouillon sur son banc",
+  "command.solve": "Résoudre le brouillon (solution de référence)",
+  "command.submit": "Envoyer le brouillon en relecture",
+  "command.comments": "Remarques des relecteurs",
+  "command.login": "Rejoindre une partie (picodev login)",
+  "command.playerSend": "Envoyer au banc (picodev send)",
+  "command.status": "Rafraîchir l'état de la partie",
+  "command.openStarter": "Ouvrir un projet de départ dans VS Code",
+  "config.url": "Adresse du Picodev CTF (https seulement). Le jeton d'auteur et, pour un site protégé par mot de passe, ce mot de passe sont gardés par adresse dans le stockage secret de VS Code."
+}

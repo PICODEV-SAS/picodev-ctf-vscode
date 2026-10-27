@@ -1,0 +1,17 @@
+{
+  "command.setToken": "Set the author token",
+  "command.forgetToken": "Forget the author token",
+  "command.newChallenge": "New challenge",
+  "command.openDraft": "Open a draft",
+  "command.send": "Send the draft",
+  "command.check": "Check the draft",
+  "command.try": "Try the draft on its bench",
+  "command.solve": "Solve the draft (reference solution)",
+  "command.submit": "Send the draft to review",
+  "command.comments": "Reviewers' remarks",
+  "command.login": "Join a game (picodev login)",
+  "command.playerSend": "Send to the bench (picodev send)",
+  "command.status": "Refresh the game status",
+  "command.openStarter": "Open a starter project in VS Code",
+  "config.url": "Address of the Picodev CTF (https only). The author token and, for a password-protected site, its password are kept per address in VS Code's secret storage."
+}
