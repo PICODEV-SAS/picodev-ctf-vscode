@@ -74,6 +74,7 @@ async function start() {
         res.writeHead(code, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(value));
       };
+      if (req.method === 'GET' && req.url === '/api/catalogue') return json(200, CATALOGUE);
       if (req.method !== 'POST' || req.url !== '/mcp/author') return json(404, {});
       if (req.headers['x-ctf-author-token'] !== TOKEN) return json(401, { detail: 'author_token_required' });
       const msg = JSON.parse(body);
@@ -97,4 +98,21 @@ async function start() {
   };
 }
 
-module.exports = { start, TOKEN };
+// GET /api/catalogue as the service gives it (cards of content.CARD_FIELDS, CatalogueCourse), with one card whose slug
+// would leave /defis/
+const CATALOGUE = {
+  challenges: [
+    { slug: 'blink-1', title: { fr: 'Clignote', en: 'Blink' }, summary: { fr: 'Une LED', en: 'A LED' }, platform: 'nano',
+      theme: 'uart', execution: 'simulated', access: 'free', points: 100, season: null },
+    { slug: '../admin', title: { fr: 'Mal', en: 'Evil' }, summary: { fr: '', en: '' }, platform: 'nano', points: 1 },
+  ],
+  courses: [
+    { slug: 'gpio', title: { fr: 'Broches', en: 'GPIO' }, summary: { fr: 'Les broches', en: 'Pins' }, reading_minutes: 12,
+      challenge: 'blink-1', chapters: 3, platforms: ['nano'] },
+  ],
+};
+
+// the game codes the suite uses: never in a file, a setting, a log or a view
+const CODES = ['AB12CD34', 'ab12cd34', 'ZX90A7K3', 'zx-90', 'K7M2P9QR'];
+
+module.exports = { start, TOKEN, CODES };

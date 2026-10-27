@@ -1,8 +1,8 @@
 {
   "name": "picodev-ctf",
   "displayName": "Picodev CTF",
-  "description": "Write Picodev CTF challenges from VS Code (author tools), and send your program to the bench of your game from the challenge's container.",
-  "version": "0.1.0",
+  "description": "Play Picodev CTF challenges from VS Code (join, build, send to the bench, watch the game) and write challenges (author tools).",
+  "version": "0.2.0",
   "publisher": "picodev",
   "icon": "media/logo.png",
   "galleryBanner": {
@@ -41,6 +41,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
+    "onUri",
     "onMcpCollection:picodev-ctf-author"
   ],
   "main": "./out/extension.js",
@@ -52,20 +53,133 @@
       }
     ],
     "commands": [
-      { "command": "picodevCtf.setToken", "title": "%command.setToken%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.forgetToken", "title": "%command.forgetToken%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.newChallenge", "title": "%command.newChallenge%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.openDraft", "title": "%command.openDraft%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.send", "title": "%command.send%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.check", "title": "%command.check%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.try", "title": "%command.try%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.solve", "title": "%command.solve%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.submit", "title": "%command.submit%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.comments", "title": "%command.comments%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.login", "title": "%command.login%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.playerSend", "title": "%command.playerSend%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.status", "title": "%command.status%", "category": "Picodev CTF" },
-      { "command": "picodevCtf.openStarter", "title": "%command.openStarter%", "category": "Picodev CTF" }
+      {
+        "command": "picodevCtf.setToken",
+        "title": "%command.setToken%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.forgetToken",
+        "title": "%command.forgetToken%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.newChallenge",
+        "title": "%command.newChallenge%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.openDraft",
+        "title": "%command.openDraft%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.send",
+        "title": "%command.send%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.check",
+        "title": "%command.check%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.try",
+        "title": "%command.try%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.solve",
+        "title": "%command.solve%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.submit",
+        "title": "%command.submit%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.comments",
+        "title": "%command.comments%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.login",
+        "title": "%command.login%",
+        "category": "Picodev CTF",
+        "icon": "$(sign-in)"
+      },
+      {
+        "command": "picodevCtf.playerSend",
+        "title": "%command.playerSend%",
+        "category": "Picodev CTF",
+        "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "picodevCtf.status",
+        "title": "%command.status%",
+        "category": "Picodev CTF",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "picodevCtf.openStarter",
+        "title": "%command.openStarter%",
+        "category": "Picodev CTF"
+      },
+      {
+        "command": "picodevCtf.launch",
+        "title": "%command.launch%",
+        "category": "Picodev CTF",
+        "icon": "$(search)"
+      },
+      {
+        "command": "picodevCtf.build",
+        "title": "%command.build%",
+        "category": "Picodev CTF",
+        "icon": "$(tools)"
+      },
+      {
+        "command": "picodevCtf.watch",
+        "title": "%command.watch%",
+        "category": "Picodev CTF",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "picodevCtf.console",
+        "title": "%command.console%",
+        "category": "Picodev CTF",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "picodevCtf.gameScreen",
+        "title": "%command.gameScreen%",
+        "category": "Picodev CTF",
+        "icon": "$(link-external)"
+      },
+      {
+        "command": "picodevCtf.hint",
+        "title": "%command.hint%",
+        "category": "Picodev CTF",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "picodevCtf.abandon",
+        "title": "%command.abandon%",
+        "category": "Picodev CTF",
+        "icon": "$(close)"
+      },
+      {
+        "command": "picodevCtf.courses",
+        "title": "%command.courses%",
+        "category": "Picodev CTF",
+        "icon": "$(book)"
+      },
+      {
+        "command": "picodevCtf.joinPending",
+        "title": "%command.joinPending%",
+        "category": "Picodev CTF",
+        "icon": "$(sign-in)"
+      }
     ],
     "configuration": {
       "title": "Picodev CTF",
@@ -77,14 +191,206 @@
           "description": "%config.url%"
         }
       }
-    }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "picodevCtf",
+          "title": "Picodev CTF",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "picodevCtf": [
+        {
+          "id": "picodevCtf.actions",
+          "name": "%view.actions%"
+        },
+        {
+          "id": "picodevCtf.game",
+          "name": "%view.game%"
+        },
+        {
+          "id": "picodevCtf.courses",
+          "name": "%view.courses%"
+        },
+        {
+          "id": "picodevCtf.author",
+          "name": "%view.author%"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "picodevCtf.game",
+        "when": "!picodevCtf.picodev && !picodevCtf.pending",
+        "contents": "%welcome.game.noPicodev%"
+      },
+      {
+        "view": "picodevCtf.game",
+        "when": "picodevCtf.picodev && !picodevCtf.pending",
+        "contents": "%welcome.game.none%"
+      },
+      {
+        "view": "picodevCtf.game",
+        "when": "picodevCtf.picodev && picodevCtf.pending",
+        "contents": "%welcome.game.pending%"
+      },
+      {
+        "view": "picodevCtf.game",
+        "when": "!picodevCtf.picodev && picodevCtf.pending",
+        "contents": "%welcome.game.pendingStarter%"
+      },
+      {
+        "view": "picodevCtf.courses",
+        "contents": "%welcome.courses%"
+      },
+      {
+        "view": "picodevCtf.author",
+        "contents": "%welcome.author%"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "picodevCtf.joinPending",
+          "when": "picodevCtf.pending"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "picodevCtf.build",
+          "when": "view == picodevCtf.actions && picodevCtf.game",
+          "group": "navigation@1"
+        },
+        {
+          "command": "picodevCtf.playerSend",
+          "when": "view == picodevCtf.actions && picodevCtf.game",
+          "group": "navigation@2"
+        },
+        {
+          "command": "picodevCtf.watch",
+          "when": "view == picodevCtf.actions && picodevCtf.game",
+          "group": "navigation@3"
+        },
+        {
+          "command": "picodevCtf.gameScreen",
+          "when": "view == picodevCtf.actions && picodevCtf.game",
+          "group": "navigation@4"
+        },
+        {
+          "command": "picodevCtf.launch",
+          "when": "view == picodevCtf.actions && !picodevCtf.game",
+          "group": "navigation@1"
+        },
+        {
+          "command": "picodevCtf.status",
+          "when": "view == picodevCtf.game && picodevCtf.picodev",
+          "group": "navigation@1"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "picodevCtf.playerSend",
+          "when": "picodevCtf.game && resourceScheme == file",
+          "group": "navigation"
+        }
+      ]
+    },
+    "walkthroughs": [
+      {
+        "id": "picodevCtf.play",
+        "title": "%walkthrough.play.title%",
+        "description": "%walkthrough.play.description%",
+        "steps": [
+          {
+            "id": "docker",
+            "title": "%walkthrough.docker.title%",
+            "description": "%walkthrough.docker.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "extensionInstalled:ms-vscode-remote.remote-containers"
+            ]
+          },
+          {
+            "id": "launch",
+            "title": "%walkthrough.launch.title%",
+            "description": "%walkthrough.launch.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "onCommand:picodevCtf.launch"
+            ]
+          },
+          {
+            "id": "open",
+            "title": "%walkthrough.open.title%",
+            "description": "%walkthrough.open.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "onCommand:picodevCtf.openStarter",
+              "onCommand:picodevCtf.login",
+              "onCommand:picodevCtf.joinPending"
+            ]
+          },
+          {
+            "id": "build",
+            "title": "%walkthrough.build.title%",
+            "description": "%walkthrough.build.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "onCommand:picodevCtf.build",
+              "onCommand:picodevCtf.playerSend"
+            ]
+          },
+          {
+            "id": "console",
+            "title": "%walkthrough.console.title%",
+            "description": "%walkthrough.console.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "onCommand:picodevCtf.console"
+            ]
+          },
+          {
+            "id": "flag",
+            "title": "%walkthrough.flag.title%",
+            "description": "%walkthrough.flag.description%",
+            "media": {
+              "image": "media/logo.png",
+              "altText": "Picodev CTF"
+            },
+            "completionEvents": [
+              "onCommand:picodevCtf.gameScreen"
+            ]
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p . --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=out/extension.js",
     "vscode:prepublish": "npm run compile",
-    "test": "npm run compile && node test/run.js"
+    "test": "npm run compile && node test/run.js",
+    "logo": "node scripts/logo.js"
   },
   "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
     "@types/node": "^22.20.5",
     "@types/vscode": "1.101.0",
     "@vscode/test-electron": "^3.1.0",

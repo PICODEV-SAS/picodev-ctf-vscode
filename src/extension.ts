@@ -3,7 +3,11 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CtfError, DEFAULT_URL, callTool, checkUrl } from './mcp';
 import { META, Meta, SLUG, readFolder, readMeta, sameFolder, writeFolder, writeMeta } from './draft';
-import { FAMILIES, loginArgs, picodev, starterLink, statusText } from './player';
+import { existsSync } from 'fs';
+import {
+  FAMILIES, Game, Ran, loginArgs, mapPath, minutesLeft, normCode, parseDiagnostics, picodev, readStatus, slugOf, starterLink,
+  statusText, watchHtml, watchPath,
+} from './player';
 
 const t = vscode.l10n.t;
 const PLATFORMS = ['nano', 'nrf52', 'esp32', 'stm32']; // the families' templates, templates/draft-<platform>/
@@ -52,24 +56,41 @@ const MESSAGES: Record<string, () => string> = {
   bad_code: () => t('A game code is 8 characters (digits and letters, without I, L, O, U).'),
   too_large: () => t('The draft is too large.'),
   network: () => t('The CTF cannot be reached.'),
+  no_game: () => t('No game here: join one first.'),
+  bad_watch: () => t('picodev watch gave no spectator link of this address.'),
+  site_password: () => t('The site\'s password was refused.'),
 };
 
 function fail(e: unknown) {
   if (e instanceof CtfError && e.code === 'cancelled') return;
   const code = e instanceof CtfError ? e.code : 'error';
   const text = MESSAGES[code]?.() ?? (e instanceof Error ? e.message : String(e));
-  log(`! ${code}: ${e instanceof Error ? e.message : String(e)}`);
+  // a refused game code may be a real one mistyped: never in the log
+  log(code === 'bad_code' ? `! ${code}` : `! ${code}: ${e instanceof Error ? e.message : String(e)}`);
   void vscode.window.showErrorMessage(t('Picodev CTF: {0}', text));
 }
 
+const guarded = (run: (...args: any[]) => Promise<unknown>) => async (...args: any[]) => {
+  try {
+    return await run(...args);
+  } catch (e) {
+    fail(e);
+  }
+};
+
 function command(id: string, run: (...args: any[]) => Promise<unknown>): vscode.Disposable {
-  return vscode.commands.registerCommand(id, async (...args: any[]) => {
-    try {
-      return await run(...args);
-    } catch (e) {
-      fail(e);
-    }
-  });
+  return vscode.commands.registerCommand(id, guarded(run));
+}
+
+/** The staging site's user:password (Caddy), asked when the site answers 401 Basic. */
+async function askSite(origin: string): Promise<string | undefined> {
+  return (await vscode.window.showInputBox({
+    title: t('Password of {0}', origin),
+    prompt: t('This site is closed by a password: user:password.'),
+    password: true,
+    ignoreFocusOut: true,
+    validateInput: (v) => (/^[^:\s]+:\S+$/.test(v) ? undefined : t('user:password')),
+  }))?.trim();
 }
 
 // --- Author ---------------------------------------------------------------------------------------------------------
@@ -92,13 +113,7 @@ async function setToken(): Promise<void> {
       break;
     } catch (e) {
       if (!(e instanceof CtfError && e.code === 'site_auth_required')) throw e;
-      site = (await vscode.window.showInputBox({
-        title: t('Password of {0}', origin),
-        prompt: t('This site is closed by a password: user:password.'),
-        password: true,
-        ignoreFocusOut: true,
-        validateInput: (v) => (/^[^:\s]+:\S+$/.test(v) ? undefined : t('user:password')),
-      }))?.trim();
+      site = await askSite(origin);
       if (!site) return;
     }
   }
@@ -310,6 +325,22 @@ async function playerEnv(): Promise<NodeJS.ProcessEnv> {
 
 const cwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
+let hasPicodev: boolean | undefined; // known after the first picodev status
+let game: Game | undefined;
+let built: boolean | undefined; // this game's last build: compiled, failed, not yet
+let sent = false;
+let warnedEnd = ''; // the game whose 5-minute warning was shown
+// a code from a vscode:// link, in this window's memory only, at most 15 minutes: never written, never logged
+let pending: { code: string; timer: NodeJS.Timeout } | undefined;
+let problems: vscode.DiagnosticCollection;
+let boardTerm: vscode.Terminal | undefined;
+let watchPanel: vscode.WebviewPanel | undefined;
+const trees: Tree[] = [];
+
+function notify(text: string, action: string, cmd: string) {
+  void vscode.window.showInformationMessage(text, action).then((r) => r === action && vscode.commands.executeCommand(cmd));
+}
+
 async function noPicodev(): Promise<void> {
   const open = t('Open in VS Code');
   const r = await vscode.window.showWarningMessage(
@@ -320,6 +351,12 @@ async function noPicodev(): Promise<void> {
 async function openStarter(family?: string): Promise<void> {
   family ??= await vscode.window.showQuickPick([...FAMILIES], { title: t('Family of the bench') });
   if (family) await vscode.env.openExternal(vscode.Uri.parse(starterLink(family)));
+}
+
+function setPending(code?: string) {
+  if (pending) clearTimeout(pending.timer);
+  pending = code ? { code, timer: setTimeout(() => setPending(), 15 * 60_000) } : undefined;
+  render();
 }
 
 async function login(code?: string): Promise<number | string | undefined> {
@@ -333,41 +370,338 @@ async function login(code?: string): Promise<number | string | undefined> {
   const r = await picodev(args, cwd(), await playerEnv(), 120_000);
   if (r.code === 'ENOENT') return void (await noPicodev());
   log(`$ picodev login …\n${r.stdout}${r.stderr}`);
-  if (r.code === 0) void vscode.window.showInformationMessage(t('Joined the game.'));
-  else void vscode.window.showErrorMessage(t('picodev login failed: {0}', r.stderr.trim().split('\n').pop() ?? String(r.code)));
-  void refreshStatus();
+  if (r.code === 0) {
+    setPending();
+    void vscode.window.showInformationMessage(t('Joined the game.'));
+  } else {
+    void vscode.window.showErrorMessage(t('picodev login failed: {0}', r.stderr.trim().split('\n').pop() ?? String(r.code)));
+  }
+  await refreshStatus();
+  return r.code;
+}
+
+/** vscode://picodev.picodev-ctf/join?code=<code>: only the code is taken; the address stays picodevCtf.url's. */
+async function handleUri(uri: vscode.Uri): Promise<unknown> {
+  if (uri.path !== '/join') return;
+  const code = normCode(new URLSearchParams(uri.query).get('code'));
+  if (!code) throw new CtfError('bad_code');
+  if (hasPicodev === undefined) await refreshStatus();
+  if (hasPicodev) return login(code);
+  setPending(code);
+  const open = t('Open the starter project');
+  const r = await vscode.window.showInformationMessage(
+    t('Game code received, kept 15 minutes in this window\'s memory. There is no picodev command here: open the starter project of the challenge\'s family in its container, then click "Back to VS Code" on the game screen again (or "Join" in the Game view).'),
+    open);
+  if (r === open) await openStarter();
+}
+
+/** The compilers' lines of a build or a send in the Problems panel, mapped to the workspace; the errors' count. */
+function showProblems(r: Ran): number {
+  problems.clear();
+  const roots = (vscode.workspace.workspaceFolders ?? []).map((f) => f.uri.fsPath);
+  const byFile = new Map<string, vscode.Diagnostic[]>();
+  let errors = 0;
+  for (const d of parseDiagnostics(`${r.stdout}\n${r.stderr}`)) {
+    const file = mapPath(d.file, cwd() ?? '/', roots, existsSync);
+    if (!file) continue; // a toolchain's header, not the player's file
+    const diag = new vscode.Diagnostic(new vscode.Range(Math.max(0, d.line - 1), Math.max(0, d.col - 1), Math.max(0, d.line - 1), 1000),
+      d.message, d.severity === 'warning' ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Error);
+    diag.source = 'picodev';
+    if (d.severity === 'error') errors++;
+    byFile.set(file, [...(byFile.get(file) ?? []), diag]);
+  }
+  for (const [file, list] of byFile) problems.set(vscode.Uri.file(file), list);
+  return errors;
+}
+
+async function compileWith(cmd: 'build' | 'send'): Promise<Ran> {
+  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: `picodev ${cmd}…` },
+    async () => picodev([cmd], cwd(), await playerEnv(), 15 * 60_000));
+  if (r.code === 'ENOENT') return r;
+  log(`$ picodev ${cmd}\n${r.stdout}${r.stderr}`);
+  const errors = showProblems(r);
+  if (r.code === 0) built = true;
+  else if (errors) built = false;
+  if (r.code !== 0) {
+    out.show(true);
+    void vscode.window.showErrorMessage(errors
+      ? t('picodev {0}: {1} error(s), see the Problems panel.', cmd, errors)
+      : t('picodev {0} failed: see the output.', cmd));
+  }
+  return r;
+}
+
+async function build(): Promise<number | string | undefined> {
+  const r = await compileWith('build');
+  if (r.code === 'ENOENT') return void (await noPicodev());
+  if (r.code === 0) vscode.window.setStatusBarMessage(t('Built.'), 5000);
+  render();
   return r.code;
 }
 
 async function playerSend(): Promise<number | string | undefined> {
-  const r = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: t('picodev send…') },
-    async () => picodev(['send'], cwd(), await playerEnv(), 15 * 60_000));
+  const r = await compileWith('send');
   if (r.code === 'ENOENT') return void (await noPicodev());
-  out.show(true);
-  log(`$ picodev send\n${r.stdout}${r.stderr}`);
-  if (r.code !== 0) void vscode.window.showErrorMessage(t('picodev send failed: see the output.'));
-  void refreshStatus();
+  if (r.code === 0) sent = true;
+  await refreshStatus();
   return r.code;
 }
 
-let hasPicodev = true;
-
 async function refreshStatus(): Promise<void> {
-  if (!hasPicodev) return;
+  if (hasPicodev === false) return;
   const r = await picodev(['status'], cwd(), await playerEnv(), 30_000);
   if (r.code === 'ENOENT') {
     hasPicodev = false; // not a challenge's container: stop asking
-    status.hide();
+    return render();
+  }
+  hasPicodev = true;
+  const before = game;
+  game = r.code === 0 ? readStatus(r.stdout) : undefined; // exit 3: no game; 4: the game ended
+  if (r.code === 4) notify(t('The game is over.'), t('Start a game'), 'picodevCtf.launch');
+  if (game && game.challenge !== before?.challenge) {
+    built = undefined;
+    sent = false;
+  } else if (game?.level !== undefined && before?.level !== undefined && game.level > before.level) {
+    notify(game.levels ? t('Level {0}/{1} reached.', game.level + 1, game.levels) : t('Level {0} reached.', game.level + 1),
+      t('Game screen'), 'picodevCtf.gameScreen');
+  }
+  const left = game?.expires_at === undefined ? undefined : game.expires_at - Date.now() / 1000;
+  if (game && left !== undefined && left > 0 && left <= 300 && warnedEnd !== `${game.challenge}:${game.expires_at}`) {
+    warnedEnd = `${game.challenge}:${game.expires_at}`;
+    notify(t('5 minutes left in the game: the flag is handed in on the game screen.'), t('Game screen'), 'picodevCtf.gameScreen');
+  }
+  render();
+}
+
+/** The game's screen on the site, <url>/defis/<challenge>. */
+async function gameUrl(): Promise<string> {
+  if (!game) await refreshStatus();
+  const slug = slugOf(game?.challenge);
+  if (!slug) throw new CtfError('no_game');
+  return `${settingUrl()}/defis/${slug}`;
+}
+
+async function gameScreen(): Promise<void> {
+  await vscode.env.openExternal(vscode.Uri.parse(await gameUrl()));
+}
+
+/** Hints and abandon, until the extension has a player's sign-in: on the game screen, said before it opens. */
+async function onGameScreen(text: string): Promise<boolean> {
+  const url = await gameUrl();
+  const open = t('Open the game screen');
+  if ((await vscode.window.showWarningMessage(text, { modal: true }, open)) !== open) return false;
+  return vscode.env.openExternal(vscode.Uri.parse(url));
+}
+
+/** The board's events (`picodev events --follow`) in a terminal of their own: picodev itself, no shell. */
+async function boardConsole(): Promise<void> {
+  if (hasPicodev === false) return noPicodev();
+  if (boardTerm && boardTerm.exitStatus === undefined) return boardTerm.show();
+  const site = (await playerEnv()).PICODEV_SITE_AUTH;
+  boardTerm = vscode.window.createTerminal({
+    name: t('Board console'), shellPath: 'picodev', shellArgs: ['events', '--follow'], cwd: cwd(),
+    env: site ? { PICODEV_SITE_AUTH: site } : undefined,
+    isTransient: true, // never revived from VS Code's storage, which would keep its environment
+    iconPath: new vscode.ThemeIcon('pulse'),
+  });
+  boardTerm.show();
+}
+
+/** Voir la partie: the site's Regarder page of `picodev watch`'s link, framed in a tab; the link is never logged. */
+async function watch(): Promise<string | undefined> {
+  const origin = settingUrl();
+  const r = await picodev(['watch'], cwd(), await playerEnv(), 30_000);
+  if (r.code === 'ENOENT') return void (await noPicodev());
+  if (r.code !== 0) {
+    if (/invalid choice/.test(r.stderr)) {
+      notify(t('This container\'s picodev has no watch command (an image older than the extension): update the container, or watch the game from its screen.'),
+        t('Game screen'), 'picodevCtf.gameScreen');
+    } else {
+      void vscode.window.showErrorMessage(t('picodev watch failed: {0}', r.stderr.trim().split('\n').pop() ?? String(r.code)));
+    }
     return;
   }
-  const text = r.code === 0 ? statusText(r.stdout) : undefined;
-  if (text) {
-    status.text = text;
-    status.tooltip = t('Picodev CTF game (picodev status)');
+  const p = watchPath(r.stdout, origin);
+  if (!p) throw new CtfError('bad_watch');
+  if (!watchPanel) {
+    // scripts on: a frame inherits the webview's sandbox, and the Regarder page needs its own; the CSP of watchHtml
+    // gives the webview's document none
+    watchPanel = vscode.window.createWebviewPanel('picodevCtf.watch', t('Game · {0}', game?.challenge || 'Picodev CTF'),
+      vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true, localResourceRoots: [] });
+    watchPanel.onDidDispose(() => (watchPanel = undefined));
+  }
+  watchPanel.webview.html = watchHtml(origin, p);
+  watchPanel.reveal();
+  return p;
+}
+
+// --- Catalogue ------------------------------------------------------------------------------------------------------
+
+/** A public GET of the site (no cookie), with the staging site's password when it asks for one. */
+async function siteGet(origin: string, p: string): Promise<any> {
+  for (let asked = false; ; asked = true) {
+    const site = await secrets.get(siteKey(origin));
+    let res: Response;
+    try {
+      res = await fetch(`${transport() ?? origin}${p}`, {
+        headers: site ? { Authorization: 'Basic ' + Buffer.from(site).toString('base64') } : {},
+        redirect: 'error',
+        signal: AbortSignal.timeout(30_000),
+      });
+    } catch (e) {
+      throw new CtfError('network', String((e as Error).message ?? e));
+    }
+    if (res.status === 401 && /basic/i.test(res.headers.get('www-authenticate') ?? '')) {
+      if (asked) throw new CtfError('site_password');
+      const s = await askSite(origin);
+      if (!s) throw new CtfError('cancelled');
+      await secrets.store(siteKey(origin), s);
+      continue;
+    }
+    if (!res.ok) throw new CtfError(`http_${res.status}`);
+    return res.json().catch(() => {
+      throw new CtfError('bad_response');
+    });
+  }
+}
+
+/** Lancer une partie: the catalogue's challenges and courses in one search; the game opens on the site. */
+async function launch(): Promise<string | undefined> {
+  const origin = settingUrl();
+  const cat = await siteGet(origin, '/api/catalogue');
+  const list = (x: unknown): any[] => (Array.isArray(x) ? x : []);
+  const items = [
+    ...list(cat?.challenges).filter((c) => slugOf(c?.slug)).map((c) => ({
+      label: String(titleOf(c.title) || c.slug),
+      description: [t('challenge'), c.platform, c.theme, Number.isInteger(c.points) ? `${c.points} pts` : '']
+        .filter((x) => typeof x === 'string' && x).join(' · '),
+      detail: String(titleOf(c.summary) ?? ''),
+      url: `${origin}/defis/${c.slug}?poste=machine&retour=vscode`,
+    })),
+    ...list(cat?.courses).filter((c) => slugOf(c?.slug)).map((c) => ({
+      label: String(titleOf(c.title) || c.slug),
+      description: [t('course'), list(c.platforms).filter((x) => typeof x === 'string').join(', '),
+        Number.isInteger(c.reading_minutes) ? `${c.reading_minutes} min` : ''].filter(Boolean).join(' · '),
+      detail: String(titleOf(c.summary) ?? ''),
+      url: `${origin}/cours/${c.slug}`,
+    })),
+  ];
+  const pick = await vscode.window.showQuickPick(items, {
+    title: t('Start a game'),
+    placeHolder: t('Search a title, a summary or a theme; filter by typing challenge, course, a platform (nano, esp32…) or points'),
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  if (!pick) return;
+  await vscode.env.openExternal(vscode.Uri.parse(pick.url));
+  return pick.url;
+}
+
+// --- Views ----------------------------------------------------------------------------------------------------------
+
+class Tree implements vscode.TreeDataProvider<vscode.TreeItem> {
+  readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeTreeData = this.changed.event;
+  constructor(readonly items: () => vscode.TreeItem[] | Promise<vscode.TreeItem[]>) {}
+  getTreeItem(i: vscode.TreeItem) {
+    return i;
+  }
+  getChildren(i?: vscode.TreeItem) {
+    return i ? [] : this.items();
+  }
+}
+
+function item(label: string, icon: string, command?: string, args?: unknown[]): vscode.TreeItem {
+  const i = new vscode.TreeItem(label);
+  i.iconPath = new vscode.ThemeIcon(icon);
+  if (command) i.command = { command, title: label, arguments: args };
+  return i;
+}
+
+/** The one "Next: …" line of a view, highlighted. */
+function nextItem([label, command]: [string, string]): vscode.TreeItem {
+  const i = item(label, 'arrow-right', command);
+  i.label = { label, highlights: [[0, label.length]] };
+  i.iconPath = new vscode.ThemeIcon('arrow-right', new vscode.ThemeColor('charts.orange'));
+  return i;
+}
+
+/** The player's single next step. */
+function nextStep(): [string, string] {
+  if (!hasPicodev) {
+    return pending ? [t('Next: open the starter project in its container'), 'picodevCtf.openStarter']
+      : [t('Next: start a game'), 'picodevCtf.launch'];
+  }
+  if (!game) return pending ? [t('Next: join the game (code received)'), 'picodevCtf.joinPending'] : [t('Next: join a game'), 'picodevCtf.login'];
+  if (built === false) return [t('Next: fix the errors (Problems panel)'), 'workbench.actions.view.problems'];
+  if (!built) return [t('Next: build'), 'picodevCtf.build'];
+  if (!sent) return [t('Next: send to the bench'), 'picodevCtf.playerSend'];
+  return [t('Next: hand in the flag on the game screen'), 'picodevCtf.gameScreen'];
+}
+
+function actionItems(): vscode.TreeItem[] {
+  const items = [nextItem(nextStep())];
+  if (!game) items.push(item(t('Join a game'), 'sign-in', 'picodevCtf.login'), item(t('Start a game'), 'search', 'picodevCtf.launch'));
+  if (!hasPicodev) items.push(item(t('Open a starter project'), 'remote', 'picodevCtf.openStarter'));
+  if (game) {
+    items.push(
+      item(t('Build'), 'tools', 'picodevCtf.build'),
+      item(t('Send to the bench'), 'cloud-upload', 'picodevCtf.playerSend'),
+      item(t('Watch the game'), 'eye', 'picodevCtf.watch'),
+      item(t('Board console'), 'terminal', 'picodevCtf.console'),
+      item(t('Game screen'), 'link-external', 'picodevCtf.gameScreen'),
+      item(t('Status'), 'refresh', 'picodevCtf.status'),
+      item(t('Ask for a hint'), 'lightbulb', 'picodevCtf.hint'),
+      item(t('Abandon the game'), 'close', 'picodevCtf.abandon'));
+  }
+  return items;
+}
+
+function gameItems(): vscode.TreeItem[] {
+  if (!game) return []; // the view's welcome says what to do
+  const left = minutesLeft(game);
+  const items = [nextItem(nextStep()), item(t('Challenge: {0}', game.challenge || '…'), 'target', 'picodevCtf.gameScreen')];
+  if (game.level !== undefined) {
+    items.push(item(game.levels ? t('Level {0}/{1}', game.level + 1, game.levels) : t('Level {0}', game.level + 1), 'layers'));
+  }
+  if (left !== undefined) items.push(item(t('{0} min left', left), 'watch'));
+  return items;
+}
+
+async function authorItems(): Promise<vscode.TreeItem[]> {
+  const token = await Promise.resolve().then(() => secrets.get(tokenKey(settingUrl()))).catch(() => undefined);
+  if (!token) return []; // the welcome asks for the token
+  const draft = (await vscode.workspace.findFiles(`**/${META}`, '**/node_modules/**', 1)).length > 0;
+  return [
+    nextItem(draft ? [t('Next: check the draft'), 'picodevCtf.check'] : [t('Next: new challenge'), 'picodevCtf.newChallenge']),
+    item(t('New challenge'), 'new-folder', 'picodevCtf.newChallenge'),
+    item(t('Open a draft'), 'folder-opened', 'picodevCtf.openDraft'),
+    ...(draft ? [
+      item(t('Send the draft'), 'cloud-upload', 'picodevCtf.send'),
+      item(t('Check'), 'checklist', 'picodevCtf.check'),
+      item(t('Try on its bench'), 'beaker', 'picodevCtf.try'),
+      item(t('Solve (reference solution)'), 'pass', 'picodevCtf.solve'),
+      item(t('Send to review'), 'send', 'picodevCtf.submit'),
+      item(t('Reviewers\' remarks'), 'comment-discussion', 'picodevCtf.comments'),
+    ] : []),
+    item(t('Forget the author token'), 'trash', 'picodevCtf.forgetToken'),
+    item('picodev.fr', 'globe', 'vscode.open', [vscode.Uri.parse('https://picodev.fr')]), // the container's only link out
+  ];
+}
+
+function render() {
+  void vscode.commands.executeCommand('setContext', 'picodevCtf.picodev', hasPicodev === true);
+  void vscode.commands.executeCommand('setContext', 'picodevCtf.game', !!game);
+  void vscode.commands.executeCommand('setContext', 'picodevCtf.pending', !!pending);
+  if (hasPicodev) {
+    status.text = game ? statusText(game) : t('$(target) no game');
+    status.tooltip = game ? t('Picodev CTF game (picodev status)') : t('Join a game');
+    status.command = game ? 'picodevCtf.game.focus' : 'picodevCtf.login';
     status.show();
   } else {
-    status.hide(); // exit 3: no game; 4: the game ended
+    status.hide();
   }
+  for (const tree of trees) tree.changed.fire();
 }
 
 // --- Activation -----------------------------------------------------------------------------------------------------
@@ -378,7 +712,7 @@ export function activate(context: vscode.ExtensionContext) {
   if (testing) pollMs = 50;
   out = vscode.window.createOutputChannel('Picodev CTF');
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-  status.command = 'picodevCtf.status';
+  problems = vscode.languages.createDiagnosticCollection('picodev');
   const version = context.extension.packageJSON.version;
 
   // The author MCP for the agent. The token goes in at resolve time only, so no definition VS Code may keep holds it.
@@ -405,9 +739,15 @@ export function activate(context: vscode.ExtensionContext) {
     },
   };
 
+  const views = { actions: new Tree(actionItems), game: new Tree(gameItems), courses: new Tree(() => []), author: new Tree(authorItems) };
+  trees.push(...Object.values(views));
   const timer = setInterval(() => void refreshStatus(), STATUS_MS);
   context.subscriptions.push(
-    out, status, mcpChanged, { dispose: () => clearInterval(timer) },
+    out, status, problems, mcpChanged, { dispose: () => clearInterval(timer) },
+    ...Object.entries(views).map(([id, tree]) => vscode.window.registerTreeDataProvider(`picodevCtf.${id}`, tree)),
+    mcpChanged.event(() => views.author.changed.fire()),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => views.author.changed.fire()),
+    vscode.window.registerUriHandler({ handleUri: (uri) => void guarded(handleUri)(uri) }),
     vscode.lm.registerMcpServerDefinitionProvider('picodev-ctf-author', mcp),
     vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('picodevCtf.url') && mcpChanged.fire()),
     command('picodevCtf.setToken', setToken),
@@ -421,13 +761,33 @@ export function activate(context: vscode.ExtensionContext) {
     command('picodevCtf.submit', submit),
     command('picodevCtf.comments', comments),
     command('picodevCtf.login', login),
+    command('picodevCtf.joinPending', async () => (pending ? login(pending.code) : login())),
+    command('picodevCtf.launch', launch),
+    command('picodevCtf.build', build),
     command('picodevCtf.playerSend', playerSend),
+    command('picodevCtf.watch', watch),
+    command('picodevCtf.console', boardConsole),
+    command('picodevCtf.gameScreen', gameScreen),
     command('picodevCtf.status', refreshStatus),
+    command('picodevCtf.hint', () => onGameScreen(
+      t('Hints are asked for on the game screen, which shows a hint\'s cost in points before revealing it. Open the game screen?'))),
+    command('picodevCtf.abandon', () => onGameScreen(
+      t('A game is abandoned on the game screen, after its own confirmation. Open the game screen?'))),
+    command('picodevCtf.courses', async () => vscode.env.openExternal(vscode.Uri.parse(`${settingUrl()}/cours`))),
     command('picodevCtf.openStarter', openStarter),
   );
+  render();
   void refreshStatus();
 
-  return testing ? { mcp, logText: () => logged, statusText: () => (status as any).text as string } : undefined;
+  return testing ? {
+    mcp,
+    logText: () => logged,
+    statusText: () => (status as any).text as string,
+    handleUri: (uri: vscode.Uri) => guarded(handleUri)(uri),
+    views,
+    watchHtml: () => watchPanel?.webview.html,
+    noPicodev: () => (hasPicodev = false), // a window outside a challenge's container
+  } : undefined;
 }
 
 export function deactivate() {}

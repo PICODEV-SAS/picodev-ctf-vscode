@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { runTests } = require('@vscode/test-electron');
-const { TOKEN } = require('./mock-mcp');
+const { TOKEN, CODES } = require('./mock-mcp');
 
 const root = path.join(__dirname, '..');
 const src = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
@@ -17,10 +17,13 @@ assert.deepStrictEqual(Object.keys(fr).filter((k) => !keys.includes(k)), [], 'un
 const nls = (f) => Object.keys(require(path.join(root, f))).sort();
 assert.deepStrictEqual(nls('package.nls.fr.json'), nls('package.nls.json'), 'package.nls.fr.json out of step');
 
-// picodev runs by execFile only: no shell, no terminal
+// picodev runs by execFile only, no shell; the one terminal runs `picodev events --follow` itself, nothing typed in it
 for (const f of fs.readdirSync(path.join(root, 'src'))) {
   const code = fs.readFileSync(path.join(root, 'src', f), 'utf8');
-  assert.doesNotMatch(code, /\b(exec|execSync|spawn|spawnSync)\s*\(|shell\s*:|sendText|createTerminal/, `${f}: a shell or a terminal`);
+  assert.doesNotMatch(code, /\b(exec|execSync|spawn|spawnSync)\s*\(|shell\s*:|sendText/, `${f}: a shell`);
+  assert.strictEqual((code.match(/createTerminal\(/g) ?? []).length,
+    (code.match(/createTerminal\(\{\n\s*name: [^\n]*, shellPath: 'picodev', shellArgs: \['events', '--follow'\],/g) ?? []).length,
+    `${f}: a terminal that is not picodev events`);
 }
 assert.match(fs.readFileSync(path.join(root, 'src/player.ts'), 'utf8'), /execFile\('picodev', args,/);
 
@@ -34,24 +37,36 @@ const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) =
   const bin = path.join(tmp, 'bin');
   fs.mkdirSync(ws);
   fs.mkdirSync(bin);
-  // the fake picodev: records its arguments one per line, answers status like the real one
+  const fake = path.join(tmp, 'fake');
+  fs.mkdirSync(fake);
+  // the fake picodev: records its arguments one per line, answers status like the real one; the suite scripts a
+  // command's stdout, stderr and exit code in <fake>/<command>.out, .err and .exit
   fs.writeFileSync(path.join(bin, 'picodev'), `#!/bin/sh
 for a in "$@"; do printf '%s\\n' "$a"; done >> "$PICODEV_FAKE_LOG"; echo -- >> "$PICODEV_FAKE_LOG"
-if [ "$1" = status ]; then echo "{\\"challenge\\": \\"blink-1\\", \\"expires_at\\": $(( $(date +%s) + 600 )), \\"level\\": 0, \\"levels\\": 3}"; fi
+d="$PICODEV_FAKE_DIR"
+if [ -f "$d/$1.out" ]; then cat "$d/$1.out"
+elif [ "$1" = status ]; then echo "{\\"challenge\\": \\"blink-1\\", \\"expires_at\\": $(( $(date +%s) + 600 )), \\"level\\": 0, \\"levels\\": 3}"; fi
+if [ -f "$d/$1.err" ]; then cat "$d/$1.err" >&2; fi
+if [ -f "$d/$1.exit" ]; then exit "$(cat "$d/$1.exit")"; fi
+exit 0
 `, { mode: 0o755 });
   try {
     await runTests({
       extensionDevelopmentPath: root,
       extensionTestsPath: path.join(__dirname, 'suite.js'),
-      extensionTestsEnv: { PATH: `${bin}${path.delimiter}${process.env.PATH}`, PICODEV_FAKE_LOG: path.join(tmp, 'picodev.log') },
+      extensionTestsEnv: {
+        PATH: `${bin}${path.delimiter}${process.env.PATH}`, PICODEV_FAKE_LOG: path.join(tmp, 'picodev.log'), PICODEV_FAKE_DIR: fake,
+      },
       cachePath: process.env.VSCODE_TEST_CACHE, // an already downloaded VS Code, if any
       launchArgs: [ws, '--disable-extensions', '--password-store=basic', '--user-data-dir', udd],
     });
+    // the author token, the game codes and the spectator link of the suite (test/suite.js)
+    const secrets = [TOKEN, ...CODES, 'sess_1.view-2'];
     const leaks = [...walk(ws), path.join(udd, 'User', 'settings.json'), ...walk(path.join(udd, 'logs'))]
-      .filter((f) => fs.existsSync(f) && fs.readFileSync(f).includes(TOKEN));
-    assert.deepStrictEqual(leaks, [], 'the author token was written to disk');
+      .filter((f) => fs.existsSync(f) && secrets.some((s) => fs.readFileSync(f).includes(s)));
+    assert.deepStrictEqual(leaks, [], 'the author token, a game code or a spectator link was written to disk');
     assert.ok(walk(path.join(udd, 'logs')).some((f) => fs.readFileSync(f, 'utf8').includes('Check: no error.')), 'the output channel log was not found');
-    console.log('token scan: workspace, user settings and logs clean');
+    console.log('token and code scan: workspace, user settings and logs clean');
   } catch (e) {
     console.error(e);
     process.exitCode = 1;

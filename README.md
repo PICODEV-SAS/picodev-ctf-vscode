@@ -1,14 +1,18 @@
 # Picodev CTF pour VS Code
 
-Extension VS Code du [Picodev CTF](https://ctf.picodev.fr) : écrire un défi de la communauté depuis
-l'éditeur (auteurs), et envoyer son programme au banc de sa partie depuis le conteneur du défi
-(joueurs). Aucune télémétrie, aucune vue web.
+Extension VS Code du [Picodev CTF](https://ctf.picodev.fr) : jouer un défi depuis le conteneur du
+défi (rejoindre la partie, compiler, envoyer au banc, regarder la partie), et écrire un défi de la
+communauté depuis l'éditeur (auteurs). Aucune télémétrie. Une seule vue web : l'onglet *Voir la
+partie*, dont le seul contenu est la page « Regarder » du site, dans un cadre ; tout le reste est en
+vues natives de VS Code et en texte brut.
 
 *English:* the VS Code extension of the [Picodev CTF](https://ctf.picodev.fr), an embedded-systems
-capture-the-flag. Players join their game with its code and send their program to the game's bench
-from the challenge's dev container; authors write, check, try and submit community challenges from
-the editor, and give VS Code's agent the CTF's author MCP server. No telemetry, no webview. The
-interface is in English and French.
+capture-the-flag. Players find a challenge in the catalogue, join their game with its code, build and
+send their program to the game's bench from the challenge's dev container, follow the board's console
+and watch the game; authors write, check, try and submit community challenges from the editor, and
+give VS Code's agent the CTF's author MCP server. No telemetry. One webview only, *Watch the game*,
+whose sole content is the site's "Regarder" page in a frame; everything else is native VS Code views
+and plain text. The interface is in English and French.
 
 ## Réglage
 
@@ -53,15 +57,40 @@ l'agent de VS Code (Copilot, mode agent) y a accès, avec le jeton dans l'en-tê
 
 ## Joueurs
 
-Dans le conteneur d'un défi (images `ghcr.io/picodev-sas/dev-<famille>`), l'extension lance la
-commande `picodev` du conteneur, sans shell :
+Le conteneur *Picodev CTF* de la barre d'activité a quatre vues : *Actions*, *Partie*, *Cours* et
+*Auteur*. Chacune dit quoi faire quand elle est vide, et met en avant une seule ligne « Suivant : … ».
+Le parcours guidé *Jouer un défi depuis VS Code* (page d'accueil de VS Code) reprend les étapes.
 
-| Commande | Ce qu'elle fait |
+Dans le conteneur d'un défi (images `ghcr.io/picodev-sas/dev-<famille>`), l'extension lance la
+commande `picodev` du conteneur, sans shell et avec des arguments vérifiés :
+
+| Action | Ce qu'elle fait |
 |---|---|
-| *Picodev CTF : Rejoindre une partie* | `picodev login <code>` avec le code de 8 caractères de l'écran de jeu (« utiliser ma machine »). |
-| *Picodev CTF : Envoyer au banc* | `picodev send` : compile et envoie au banc de la partie. |
-| *Picodev CTF : Rafraîchir l'état de la partie* | `picodev status`, aussi toutes les 60 s dans la barre d'état. |
-| *Picodev CTF : Ouvrir un projet de départ* | Ouvre `PICODEV-SAS/picodev-starter-<famille>` dans un conteneur. |
+| *Lancer une partie* | Cherche dans le catalogue du site (défis et cours ensemble ; tapez `défi`, `cours`, une plateforme ou des points pour filtrer) et ouvre le défi sur le site, où l'on se connecte et ouvre la partie avec « utiliser ma machine ». |
+| *Rejoindre une partie* | `picodev login <code>` avec le code de 8 caractères de l'écran de jeu. |
+| *Compiler* | `picodev build` ; les lignes `fichier:ligne:col: error:` vont dans le panneau Problèmes, effacées à la compilation réussie suivante. |
+| *Envoyer au banc* | `picodev send` : compile et envoie au banc de la partie (aussi en bouton dans le titre de l'éditeur). |
+| *Voir la partie* | Ouvre dans un onglet la page « Regarder » du site (console, montage, chronogramme, radio, réseau) avec le lien spectateur de `picodev watch`. |
+| *Console de la carte* | `picodev events --follow` dans un terminal à part (lancé sans shell). |
+| *Écran de jeu* | Ouvre `<adresse>/defis/<défi>` dans le navigateur. Le drapeau s'y rend, jamais depuis l'extension. |
+| *État* | `picodev status`, aussi toutes les 60 s et après chaque envoi. |
+| *Demander un indice*, *Abandonner la partie* | Ouvrent l'écran de jeu, qui montre le coût de l'indice ou demande confirmation (l'extension n'a pas encore de connexion joueur). |
+| *Ouvrir un projet de départ* | Ouvre `PICODEV-SAS/picodev-starter-<famille>` dans un conteneur. |
+
+La barre d'état montre la partie (défi, niveau, minutes restantes ; clic : la vue *Partie*) ou
+« aucune partie » (clic : rejoindre). Une notification annonce un nouveau niveau, les 5 dernières
+minutes et la fin de la partie.
+
+**Revenir dans VS Code.** Un défi ouvert depuis l'extension montre sur son écran de jeu le lien
+`vscode://picodev.picodev-ctf/join?code=<code>`. L'extension n'en prend que le code (8 caractères ;
+tout autre paramètre est ignoré, l'adresse reste celle du réglage `picodevCtf.url`). Si `picodev`
+répond dans la fenêtre, elle rejoint la partie ; sinon elle propose d'ouvrir le projet de départ dans
+son conteneur et garde le code en mémoire 15 minutes au plus, sans l'écrire nulle part. Le conteneur
+ouvre une nouvelle fenêtre : y cliquer de nouveau « Revenir dans VS Code » sur l'écran de jeu.
+
+**Voir la partie** est la seule vue web de l'extension : un cadre de la page `/regarder` du site, à
+l'adresse `picodevCtf.url`, et rien d'autre (aucun script de l'extension, politique de sécurité
+stricte). Avec une image plus ancienne sans `picodev watch`, une notification le dit.
 
 Sans `picodev` (VS Code hors du conteneur), l'extension propose d'ouvrir le projet de départ de la
 famille dans VS Code.
@@ -73,7 +102,12 @@ npm ci
 xvfb-run -a npm test   # bundle français, pas de shell, puis la suite dans un VS Code jetable
 ```
 
-La suite tourne contre un faux MCP d'auteur (`test/mock-mcp.js`) et un faux `picodev`
-(`test/run.js`), puis cherche le jeton dans l'espace de travail, les réglages et les journaux.
+La suite tourne contre un faux MCP d'auteur et un faux catalogue (`test/mock-mcp.js`) et un faux
+`picodev` (`test/run.js`), puis cherche le jeton, les codes de partie et le lien spectateur dans
+l'espace de travail, les réglages, les journaux et les vues.
+
+L'icône de la boutique, `media/logo.png`, est rendue depuis `media/logo.svg` par `npm run logo`
+(`@resvg/resvg-js`, dépendance de développement seulement) ; l'icône de la barre d'activité est
+`media/activity.svg`.
 
 Licence Apache 2.0 (`LICENSE`).

@@ -25,7 +25,8 @@ for (const name of Object.keys(answers)) {
   });
 }
 stub(vscode.window, 'showErrorMessage', async (...args) => void asked.showErrorMessage.push(args));
-stub(vscode.window, 'showInformationMessage', async () => undefined);
+asked.showInformationMessage = [];
+stub(vscode.window, 'showInformationMessage', async (...args) => void asked.showInformationMessage.push(args));
 const opened = [];
 stub(vscode.env, 'openExternal', async (uri) => void opened.push(uri.toString(true)) || true);
 
@@ -212,6 +213,149 @@ exports.run = async () => {
     assert.deepStrictEqual(opened, ['vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/PICODEV-SAS/picodev-starter-esp32']);
     await exec('picodevCtf.openStarter', 'x&y');
     assert.strictEqual(opened.length, 1);
+
+    // --- the views, built from picodev status; a single highlighted "Next" line
+    const fakeSet = (cmd, files = {}) => {
+      for (const ext of ['out', 'err', 'exit']) {
+        const f = path.join(process.env.PICODEV_FAKE_DIR, `${cmd}.${ext}`);
+        if (files[ext] === undefined) fs.rmSync(f, { force: true });
+        else fs.writeFileSync(f, String(files[ext]));
+      }
+    };
+    const labelOf = (i) => (typeof i.label === 'string' ? i.label : i.label.label);
+    const view = async (id) => (await api.views[id].getChildren()).map(labelOf);
+    const infos = () => asked.showInformationMessage.map((a) => String(a[0]));
+    const nowS = () => Math.floor(Date.now() / 1000);
+    let game = await view('game');
+    assert.deepStrictEqual(game.slice(0, 3), ['Next: hand in the flag on the game screen', 'Challenge: blink-1', 'Level 1/3']);
+    assert.match(game[3], /^1[01] min left$/);
+    const [next] = await api.views.game.getChildren();
+    assert.deepStrictEqual(next.label.highlights, [[0, next.label.label.length]]);
+    const actions = await view('actions');
+    assert.ok(actions.includes('Watch the game') && actions.includes('Board console') && !actions.includes('Join a game'), actions.join());
+    assert.strictEqual(actions.filter((l) => l.startsWith('Next:')).length, 1);
+    const author = await view('author');
+    assert.strictEqual(author[0], 'Next: check the draft');
+    assert.strictEqual(author.at(-1), 'picodev.fr');
+
+    // --- build: the compiler's lines in the Problems panel, mapped to the workspace; cleared by a successful build
+    fs.mkdirSync(path.join(ws, 'src'), { recursive: true });
+    const main = vscode.Uri.file(path.join(ws, 'src/main.c'));
+    fs.writeFileSync(main.fsPath, 'int main(void) { return x; }\n');
+    fakeSet('build', {
+      out: `${ws}/src/main.c:1:25: error: 'x' undeclared (first use in this function)\n`
+        + '/tmp/build-copy/src/main.c:1:1: \x1b[35mwarning: \x1b[0munused thing\n'
+        + "/opt/toolchain/include/stdio.h:3:1: error: not the player's\n",
+      exit: 1,
+    });
+    assert.strictEqual(await exec('picodevCtf.build'), 1);
+    assert.deepStrictEqual(vscode.languages.getDiagnostics(main).map((d) => [d.severity, d.range.start.line, d.range.start.character, d.message]),
+      [[vscode.DiagnosticSeverity.Error, 0, 24, "'x' undeclared (first use in this function)"], [vscode.DiagnosticSeverity.Warning, 0, 0, 'unused thing']]);
+    assert.ok(!vscode.languages.getDiagnostics().some(([u, l]) => l.some((d) => d.source === 'picodev') && !u.fsPath.startsWith(ws)),
+      'a toolchain file in Problems');
+    assert.match(lastError(), /picodev build: 1 error\(s\)/);
+    assert.strictEqual((await view('actions'))[0], 'Next: fix the errors (Problems panel)');
+    fakeSet('build');
+    assert.strictEqual(await exec('picodevCtf.build'), 0);
+    assert.deepStrictEqual(vscode.languages.getDiagnostics(main), []);
+    assert.match(fake(), /^build\n--$/m);
+
+    // --- notifications: level reached, 5 minutes left (once), game over (exit 4) and the status reset
+    fakeSet('status', { out: JSON.stringify({ challenge: 'blink-1', expires_at: nowS() + 200, level: 1, levels: 3 }) });
+    await exec('picodevCtf.status');
+    assert.ok(infos().includes('Level 2/3 reached.'), infos().join('|'));
+    assert.ok(infos().some((m) => m.startsWith('5 minutes left')));
+    const notified = infos().length;
+    await exec('picodevCtf.status');
+    assert.strictEqual(infos().length, notified, 'warned twice');
+    fakeSet('status', { exit: 4 });
+    await exec('picodevCtf.status');
+    assert.strictEqual(infos().at(-1), 'The game is over.');
+    assert.strictEqual(api.statusText(), '$(target) no game');
+    assert.deepStrictEqual(await view('game'), []);
+    assert.deepStrictEqual((await view('actions')).slice(0, 3), ['Next: join a game', 'Join a game', 'Start a game']);
+    fakeSet('status');
+    await exec('picodevCtf.status');
+    assert.match(api.statusText(), /^\$\(target\) blink-1 · /);
+
+    // --- game screen, hint and abandon (a modal says the game screen opens), board console (picodev itself)
+    await exec('picodevCtf.gameScreen');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/blink-1');
+    answers.showWarningMessage.push('Open the game screen');
+    await exec('picodevCtf.hint');
+    assert.strictEqual(asked.showWarningMessage.at(-1)[1].modal, true);
+    assert.match(asked.showWarningMessage.at(-1)[0], /cost in points/);
+    assert.strictEqual(opened.length, 3);
+    await exec('picodevCtf.abandon'); // no answer: nothing opens
+    assert.match(asked.showWarningMessage.at(-1)[0], /abandoned on the game screen/);
+    assert.strictEqual(opened.length, 3);
+    await exec('picodevCtf.console');
+    const term = vscode.window.terminals.find((x) => x.name === 'Board console');
+    assert.deepStrictEqual([term.creationOptions.shellPath, term.creationOptions.shellArgs], ['picodev', ['events', '--follow']]);
+    term.dispose();
+
+    // --- Voir la partie: only the link's /regarder#<session>.<viewer>, framed from picodevCtf.url's origin
+    fakeSet('watch', { out: 'https://ctf.test/regarder#sess_1.view-2\n' });
+    assert.strictEqual(await exec('picodevCtf.watch'), '/regarder#sess_1.view-2');
+    const html = api.watchHtml();
+    assert.match(html, /content="default-src 'none'; frame-src https:\/\/ctf\.test; style-src 'unsafe-inline'"/);
+    assert.match(html, /<iframe src="https:\/\/ctf\.test\/regarder#sess_1\.view-2" sandbox="allow-scripts allow-same-origin"/);
+    assert.doesNotMatch(html, /<script/i);
+    for (const bad of ['https://evil.test/regarder#a.b', 'http://ctf.test/regarder#a.b', '/regarder#a', '/regarder#a.b?x=1',
+      'https://ctf.test/regarder?x#a.b', '/regarder#a.b"><script>', '/other#a.b', 'javascript:alert(1)//regarder#a.b', '']) {
+      fakeSet('watch', { out: bad });
+      assert.strictEqual(await exec('picodevCtf.watch'), undefined, bad);
+      assert.match(lastError(), /no spectator link/, bad);
+    }
+    fakeSet('watch', { err: "picodev: error: argument command: invalid choice: 'watch'", exit: 2 });
+    await exec('picodevCtf.watch');
+    assert.match(infos().at(-1), /has no watch command/);
+    fakeSet('watch');
+
+    // --- Lancer une partie: the public catalogue (no cookie, no token), a challenge opens with poste=machine&retour=vscode
+    answers.showQuickPick.push('Blink');
+    assert.strictEqual(await exec('picodevCtf.launch'), 'https://ctf.test/defis/blink-1?poste=machine&retour=vscode');
+    const req = m.state.requests.at(-1);
+    assert.strictEqual(req.url, '/api/catalogue');
+    assert.ok(!req.headers.cookie && !req.headers.authorization && !req.headers['x-ctf-author-token']);
+    const [items, opts] = asked.showQuickPick.at(-1);
+    assert.deepStrictEqual((await items).map((i) => [i.label, i.description]),
+      [['Blink', 'challenge · nano · uart · 100 pts'], ['GPIO', 'course · nano · 12 min']]);
+    assert.ok(opts.matchOnDescription && opts.matchOnDetail);
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/blink-1?poste=machine&retour=vscode');
+    answers.showQuickPick.push('GPIO');
+    await exec('picodevCtf.launch');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/cours/gpio');
+
+    // --- vscode://picodev.picodev-ctf/join?code=…: the code only, normalised; any other parameter ignored
+    const logins = () => (fake().match(/^login$/gm) ?? []).length;
+    const before4 = logins();
+    for (const q of ['', 'code=', 'code=ABCDEFGI', 'code=AB12CD3', 'code=AB12CD34X', 'url=https%3A%2F%2Fevil.test', 'code=AB12%3BCD34']) {
+      await api.handleUri(vscode.Uri.parse(`vscode://picodev.picodev-ctf/join?${q}`));
+      assert.match(lastError(), /8 characters/, q);
+    }
+    await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/other?code=AB12CD34'));
+    assert.strictEqual(logins(), before4, 'picodev ran for a refused link');
+    await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/join?code=zx-90%20a7k3&url=https%3A%2F%2Fevil.test&next=x'));
+    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nZX90A7K3\n--$/m);
+    assert.ok(!fake().includes('evil'));
+
+    // without picodev: the code waits in memory, the views offer the starter project, then "Join"
+    api.noPicodev();
+    await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/join?code=K7M2P9QR'));
+    assert.match(infos().at(-1), /kept 15 minutes/);
+    assert.ok(!fake().includes('K7M2P9QR'));
+    assert.strictEqual((await view('actions'))[0], 'Next: open the starter project in its container');
+    await exec('picodevCtf.joinPending');
+    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nK7M2P9QR\n--$/m);
+    assert.strictEqual((await view('actions'))[0], 'Next: start a game', 'the code stayed after joining');
+
+    // --- no token and no game code in a view, the log or the settings
+    const shown = (await Promise.all(Object.keys(api.views).map(view))).flat().join('\n');
+    for (const s of [TOKEN, ...mock.CODES]) {
+      assert.ok(!shown.includes(s) && !api.logText().includes(s) && !JSON.stringify(config.inspect('url')).includes(s), s);
+    }
+    assert.ok(!api.logText().includes('sess_1'), 'the spectator link was logged');
     console.log('suite: ok');
   } finally {
     await config.update('url', undefined, vscode.ConfigurationTarget.Global);
