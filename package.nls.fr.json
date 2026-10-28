@@ -13,7 +13,7 @@
   "command.playerSend": "Envoyer au banc (picodev send)",
   "command.status": "Rafraîchir l'état de la partie",
   "command.openStarter": "Ouvrir un projet de départ dans VS Code",
-  "config.url": "Adresse du Picodev CTF (https seulement). Le jeton d'auteur et, pour un site protégé par mot de passe, ce mot de passe sont gardés par adresse dans le stockage secret de VS Code.",
+  "config.url": "Adresse du Picodev CTF (https seulement ; http pour localhost et 127.0.0.1). Réglage de la machine : un dossier ouvert ne peut pas le changer. Le jeton d'auteur, la connexion de VS Code et, pour un site protégé par mot de passe, ce mot de passe sont gardés par adresse dans le stockage secret de VS Code.",
   "command.launch": "Lancer une partie",
   "command.build": "Compiler (picodev build)",
   "command.watch": "Voir la partie",
@@ -31,7 +31,7 @@
   "welcome.game.none": "Suivant : rejoindre une partie. Ouvrez-la sur le site avec « utiliser ma machine », puis entrez le code de 8 caractères de son écran.\n[Rejoindre une partie](command:picodevCtf.login)\n[Lancer une partie](command:picodevCtf.launch)",
   "welcome.game.pending": "Suivant : rejoindre la partie. Un code est arrivé de l'écran de jeu ; il est gardé 15 minutes dans la mémoire de cette fenêtre seulement.\n[Rejoindre](command:picodevCtf.joinPending)",
   "welcome.game.pendingStarter": "Suivant : ouvrir le projet de départ dans son conteneur. Un code est arrivé de l'écran de jeu (gardé 15 minutes dans la mémoire de cette fenêtre seulement) ; rejoignez depuis la fenêtre du conteneur, où est picodev.\n[Ouvrir le projet de départ](command:picodevCtf.openStarter)\n[Rejoindre](command:picodevCtf.joinPending)",
-  "welcome.courses": "Suivant : lire un cours sur le site. Les lire ici, avec votre avancement, viendra avec la connexion du joueur dans l'extension.\n[Parcourir les cours](command:picodevCtf.courses)",
+  "welcome.courses": "Prochaine étape : lire un cours. Les cours du catalogue s'affichent ici ; connectez VS Code sur le site pour garder votre avancement.\n[Ouvrir un cours](command:picodevCtf.openCourse)\n[Se connecter](command:picodevCtf.signIn)\n[Parcourir les cours sur le site](command:picodevCtf.courses)",
   "welcome.author": "Suivant : enregistrer votre jeton d'auteur. Écrire un défi demande le rôle d'auteur et un jeton ctfa_…, créé dans votre profil sur le site.\n[Enregistrer le jeton d'auteur](command:picodevCtf.setToken)\n[picodev.fr](https://picodev.fr)",
   "walkthrough.play.title": "Jouer un défi depuis VS Code",
   "walkthrough.play.description": "Du catalogue au drapeau : votre machine, le conteneur du défi, le banc de la partie.",
@@ -58,5 +58,9 @@
   "walkthrough.flag.title": "Rendre le drapeau sur l'écran de jeu",
   "walkthrough.flag.description": "Le drapeau se rend sur l'écran de jeu, jamais depuis l'extension. L'indice et l'abandon y sont aussi.\n[Écran de jeu](command:picodevCtf.gameScreen)",
   "walkthrough.flag.svg": "media/walkthrough/fr/flag.svg",
-  "walkthrough.flag.alt": "Dans Actions, cliquez Écran de jeu ; sur l'écran de jeu, collez le drapeau et validez."
+  "walkthrough.flag.alt": "Dans Actions, cliquez Écran de jeu ; sur l'écran de jeu, collez le drapeau et validez.",
+  "command.signIn": "Connecter VS Code (cours, indices)",
+  "command.signOut": "Déconnecter VS Code",
+  "command.openCourse": "Ouvrir un cours",
+  "command.markRead": "Marquer le cours comme lu"
 }

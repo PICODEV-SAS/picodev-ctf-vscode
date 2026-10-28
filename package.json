@@ -2,7 +2,7 @@
   "name": "picodev-ctf",
   "displayName": "Picodev CTF",
   "description": "Play Picodev CTF challenges from VS Code (join, build, send to the bench, watch the game) and write challenges (author tools).",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "picodev",
   "icon": "media/logo.png",
   "galleryBanner": {
@@ -179,6 +179,30 @@
         "title": "%command.joinPending%",
         "category": "Picodev CTF",
         "icon": "$(sign-in)"
+      },
+      {
+        "command": "picodevCtf.signIn",
+        "title": "%command.signIn%",
+        "category": "Picodev CTF",
+        "icon": "$(account)"
+      },
+      {
+        "command": "picodevCtf.signOut",
+        "title": "%command.signOut%",
+        "category": "Picodev CTF",
+        "icon": "$(sign-out)"
+      },
+      {
+        "command": "picodevCtf.openCourse",
+        "title": "%command.openCourse%",
+        "category": "Picodev CTF",
+        "icon": "$(book)"
+      },
+      {
+        "command": "picodevCtf.markRead",
+        "title": "%command.markRead%",
+        "category": "Picodev CTF",
+        "icon": "$(check)"
       }
     ],
     "configuration": {
@@ -187,8 +211,9 @@
         "picodevCtf.url": {
           "type": "string",
           "default": "https://ctf.picodev.fr",
-          "pattern": "^https://",
-          "description": "%config.url%"
+          "pattern": "^(https://|http://(localhost|127\\.0\\.0\\.1)(:[0-9]+)?/?$)",
+          "description": "%config.url%",
+          "scope": "machine"
         }
       }
     },
@@ -256,6 +281,10 @@
         {
           "command": "picodevCtf.joinPending",
           "when": "picodevCtf.pending"
+        },
+        {
+          "command": "picodevCtf.signOut",
+          "when": "picodevCtf.signedIn"
         }
       ],
       "view/title": [
@@ -288,6 +317,11 @@
           "command": "picodevCtf.status",
           "when": "view == picodevCtf.game && picodevCtf.picodev",
           "group": "navigation@1"
+        },
+        {
+          "command": "picodevCtf.signIn",
+          "when": "view == picodevCtf.courses && !picodevCtf.signedIn",
+          "group": "navigation@1"
         }
       ],
       "editor/title": [
@@ -295,6 +329,13 @@
           "command": "picodevCtf.playerSend",
           "when": "picodevCtf.game && resourceScheme == file",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "picodevCtf.markRead",
+          "when": "view == picodevCtf.courses && viewItem == course && picodevCtf.signedIn",
+          "group": "inline"
         }
       ]
     },
@@ -381,7 +422,8 @@
           }
         ]
       }
-    ]
+    ],
+    "markdown.markdownItPlugins": true
   },
   "scripts": {
     "compile": "tsc -p . --noEmit && esbuild src/extension.ts --bundle --platform=node --format=cjs --target=node20 --external:vscode --outfile=out/extension.js",

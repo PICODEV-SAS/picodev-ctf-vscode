@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { CtfError, DEFAULT_URL, callTool, checkUrl } from './mcp';
+import { SCHEME, coursePlugin, courseSlug, courseText } from './course';
 import { META, Meta, SLUG, readFolder, readMeta, sameFolder, sections, writeFolder, writeMeta } from './draft';
 import { existsSync } from 'fs';
 import {
@@ -12,6 +13,10 @@ import {
 const t = vscode.l10n.t;
 const PLATFORMS = ['nano', 'nrf52', 'esp32', 'stm32']; // the families' templates, templates/draft-<platform>/
 const TOKEN = /^ctfa_[A-Za-z0-9_-]{20,59}$/;
+const PLAYER_TOKEN = /^ctfp_[A-Za-z0-9_-]{43}$/;
+// the contract's closed list: the only requests that carry the player's token
+const PLAYER_ROUTES = new RegExp('^(GET /api/me/(courses|games)|POST /api/me/courses/[a-z0-9-]+/read|GET /api/games/\\d+'
+  + '|POST /api/games/\\d+/(hints/\\d+|close)|DELETE /api/device)$');
 const MAX_POLLS = 120; // ten minutes of draft_run at one every 5 s
 const STATUS_MS = 60_000;
 
@@ -32,13 +37,14 @@ const tried = new Map<number, number>();
 
 const tokenKey = (origin: string) => `token:${origin}`;
 const siteKey = (origin: string) => `site:${origin}`;
+const playerKey = (origin: string) => `player:${origin}`;
 
 function log(line: string) {
   out.appendLine(line);
   if (testing) logged += line + '\n';
 }
 
-/** The CTF's address from picodevCtf.url: https only. */
+/** The CTF's address from picodevCtf.url (machine scope: a workspace's value is never read): https, or localhost. */
 function settingUrl(): string {
   return checkUrl(vscode.workspace.getConfiguration('picodevCtf').get<string>('url') || DEFAULT_URL);
 }
@@ -59,6 +65,13 @@ const MESSAGES: Record<string, () => string> = {
   unknown_template: () => t('No template for this platform yet.'),
   no_draft: () => t('No draft folder here (no valid .picodev-draft.json).'),
   bad_code: () => t('A game code is 8 characters (digits and letters, without I, L, O, U).'),
+  bad_device_code: () => t('A sign-in code is 8 characters (digits and letters, without I, L, O, U).'),
+  unknown_code: () => t('This sign-in code is unknown, already used or expired: make a new one on your profile page.'),
+  too_many_devices: () => t('5 devices are already signed in: revoke one on your profile page.'),
+  not_available: () => t('Signing VS Code in is not available on this site yet.'),
+  hint_locked: () => t('This hint is not open yet: it unlocks later in the game.'),
+  unknown_game: () => t('This game is not yours, or no longer exists.'),
+  bad_response: () => t('The site gave an answer the extension does not read.'),
   too_large: () => t('The draft is too large.'),
   network: () => t('The CTF cannot be reached.'),
   no_game: () => t('No game here: join one first.'),
@@ -70,8 +83,11 @@ function fail(e: unknown) {
   if (e instanceof CtfError && e.code === 'cancelled') return;
   const code = e instanceof CtfError ? e.code : 'error';
   const text = MESSAGES[code]?.() ?? (e instanceof Error ? e.message : String(e));
-  // a refused game code may be a real one mistyped: never in the log
-  log(code === 'bad_code' ? `! ${code}` : `! ${code}: ${e instanceof Error ? e.message : String(e)}`);
+  // a refused code may be a real one mistyped: never in the log
+  log(code === 'bad_code' || code === 'bad_device_code' ? `! ${code}` : `! ${code}: ${e instanceof Error ? e.message : String(e)}`);
+  if (code === 'player_token_required') {
+    return notify(t('The site refused VS Code\'s sign-in (expired or revoked): sign in again.'), t('Sign in'), 'picodevCtf.signIn');
+  }
   void vscode.window.showErrorMessage(t('Picodev CTF: {0}', text));
 }
 
@@ -390,8 +406,12 @@ async function login(code?: string): Promise<number | string | undefined> {
   return r.code;
 }
 
-/** vscode://picodev.picodev-ctf/join?code=<code>: only the code is taken; the address stays picodevCtf.url's. */
+/**
+ * vscode://picodev.picodev-ctf/join?code=<game code> and /connect?code=<sign-in code>: only the code is taken; the
+ * address stays picodevCtf.url's. A game code only ever goes to picodev login, a sign-in code to the claim.
+ */
 async function handleUri(uri: vscode.Uri): Promise<unknown> {
+  if (uri.path === '/connect') return connect(new URLSearchParams(uri.query).get('code'), true);
   if (uri.path !== '/join') return;
   const code = normCode(new URLSearchParams(uri.query).get('code'));
   if (!code) throw new CtfError('bad_code');
@@ -495,7 +515,7 @@ async function gameScreen(): Promise<void> {
   await vscode.env.openExternal(vscode.Uri.parse(await gameUrl()));
 }
 
-/** Hints and abandon, until the extension has a player's sign-in: on the game screen, said before it opens. */
+/** Hints and abandon without VS Code's sign-in: on the game screen, said before it opens. */
 async function onGameScreen(text: string): Promise<boolean> {
   const url = await gameUrl();
   const open = t('Open the game screen');
@@ -547,16 +567,24 @@ async function watch(): Promise<string | undefined> {
 
 // --- Catalogue ------------------------------------------------------------------------------------------------------
 
-/** A public GET of the site (no cookie), with the staging site's password when it asks for one. */
-async function siteGet(origin: string, p: string): Promise<any> {
+/**
+ * A request to the site at picodevCtf.url (never a cookie), with the staging site's password when it asks for one, no
+ * redirect followed. `token`, the player's, goes only to the contract's routes, in X-CTF-Player-Token; a 401
+ * player_token_required erases it, any other error keeps it. The error's code is the service's detail, else http_<status>.
+ */
+async function siteCall(method: string, p: string, body?: object, token?: string): Promise<any> {
+  const origin = settingUrl();
+  if (token && !PLAYER_ROUTES.test(`${method} ${p}`)) throw new CtfError('bad_route', `${method} ${p}`);
   for (let asked = false; ; asked = true) {
     const site = await secrets.get(siteKey(origin));
+    const headers: Record<string, string> = {};
+    if (site) headers.Authorization = 'Basic ' + Buffer.from(site).toString('base64');
+    if (token) headers['X-CTF-Player-Token'] = token;
+    if (body) headers['Content-Type'] = 'application/json';
     let res: Response;
     try {
       res = await fetch(`${transport() ?? origin}${p}`, {
-        headers: site ? { Authorization: 'Basic ' + Buffer.from(site).toString('base64') } : {},
-        redirect: 'error',
-        signal: AbortSignal.timeout(30_000),
+        method, headers, body: body && JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(30_000),
       });
     } catch (e) {
       throw new CtfError('network', String((e as Error).message ?? e));
@@ -568,17 +596,27 @@ async function siteGet(origin: string, p: string): Promise<any> {
       await secrets.store(siteKey(origin), s);
       continue;
     }
-    if (!res.ok) throw new CtfError(`http_${res.status}`);
-    return res.json().catch(() => {
-      throw new CtfError('bad_response');
-    });
+    const text = await res.text().catch(() => '');
+    let json: any;
+    try {
+      json = text ? JSON.parse(text) : undefined;
+    } catch {
+      if (res.ok) throw new CtfError('bad_response');
+    }
+    if (res.ok) return json;
+    const detail = typeof json?.detail === 'string' && /^[a-z_]{1,40}$/.test(json.detail) ? json.detail : undefined;
+    // the token erased only when it is still the one kept (a claim's unconfirmed token is not)
+    if (res.status === 401 && token && detail === 'player_token_required' && (await secrets.get(playerKey(origin))) === token) {
+      await secrets.delete(playerKey(origin));
+    }
+    throw new CtfError(detail ?? `http_${res.status}`, `http_${res.status}`);
   }
 }
 
 /** Lancer une partie: the catalogue's challenges and courses in one search; the game opens on the site. */
 async function launch(): Promise<string | undefined> {
   const origin = settingUrl();
-  const cat = await siteGet(origin, '/api/catalogue');
+  const cat = await siteCall('GET', '/api/catalogue');
   const list = (x: unknown): any[] => (Array.isArray(x) ? x : []);
   const items = [
     ...list(cat?.challenges).filter((c) => slugOf(c?.slug)).map((c) => ({
@@ -605,6 +643,187 @@ async function launch(): Promise<string | undefined> {
   if (!pick) return;
   await vscode.env.openExternal(vscode.Uri.parse(pick.url));
   return pick.url;
+}
+
+// --- Player's sign-in ----------------------------------------------------------------------------------------------
+
+let signedIn = false; // a player's token is kept for picodevCtf.url's origin
+let courseList: { slug: string; title: string; read: boolean }[] | undefined; // the Courses view, read again on demand
+let lastCourse: string | undefined; // the course last opened in the preview, for Mark as read
+
+const playerToken = async () => secrets.get(playerKey(settingUrl()));
+
+async function refreshPlayer(): Promise<void> {
+  signedIn = !!(await playerToken().catch(() => undefined));
+  courseList = undefined;
+  render();
+}
+
+/**
+ * Claims a sign-in code made on the site's profile page. Never silent: a link asks first (anyone can send one made on
+ * their own account), and the token is kept, replacing the one before, only once the player has seen whose it is.
+ */
+async function connect(raw: unknown, link: boolean): Promise<string | undefined> {
+  const code = normCode(raw);
+  if (!code) throw new CtfError('bad_device_code');
+  const origin = settingUrl();
+  const yes = t('Sign in');
+  if (link && (await vscode.window.showWarningMessage(t('Sign in to {0}?', origin), {
+    modal: true, detail: t('Only if you just made this code on your profile page, on the "VS Code" card.'),
+  }, yes)) !== yes) return;
+  let r: any;
+  try {
+    r = await siteCall('POST', '/api/device/claim', { code });
+  } catch (e) {
+    if (e instanceof CtfError && e.message === 'http_404' && e.code !== 'unknown_code') throw new CtfError('not_available');
+    throw e;
+  }
+  if (typeof r?.token !== 'string' || !PLAYER_TOKEN.test(r.token)) throw new CtfError('bad_response');
+  const pseudonym = String(r.pseudonym ?? '').slice(0, 64);
+  const keep = t('Yes, it is mine');
+  if ((await vscode.window.showWarningMessage(t('Signed in as {0}. Is it the pseudonym shown on the card?', pseudonym), {
+    modal: true, detail: t('If it is not yours, the sign-in is dropped and VS Code stays as it was.'),
+  }, keep)) !== keep) {
+    await siteCall('DELETE', '/api/device', undefined, r.token).catch(() => undefined); // not kept: revoked
+    return;
+  }
+  const before = await secrets.get(playerKey(origin));
+  if (before && before !== r.token) await siteCall('DELETE', '/api/device', undefined, before).catch(() => undefined);
+  await secrets.store(playerKey(origin), r.token);
+  log(t('VS Code signed in to {0} as {1}.', origin, pseudonym));
+  await refreshPlayer();
+  return pseudonym;
+}
+
+/** Se connecter: the profile page opens on the site, where the code is made, then pasted here. */
+async function signIn(): Promise<string | undefined> {
+  await vscode.env.openExternal(vscode.Uri.parse(`${settingUrl()}/profil`));
+  const code = await vscode.window.showInputBox({
+    title: t('Sign-in code'),
+    prompt: t('The 8-character code of the "VS Code" card on your profile page.'),
+    ignoreFocusOut: true,
+    password: true,
+    validateInput: (v) => (normCode(v) ? undefined : t('8 characters: digits and letters, without I, L, O, U.')),
+  });
+  return code === undefined ? undefined : connect(code, false);
+}
+
+/** Se déconnecter: the site revokes the token (DELETE /api/device), then it is erased here, whatever the answer. */
+async function signOut(): Promise<void> {
+  const origin = settingUrl();
+  const token = await secrets.get(playerKey(origin));
+  if (token) await siteCall('DELETE', '/api/device', undefined, token).catch((e) => log(`! sign-out: ${e instanceof CtfError ? e.code : e}`));
+  await secrets.delete(playerKey(origin));
+  await refreshPlayer();
+  void vscode.window.showInformationMessage(t('VS Code signed out of {0}.', origin));
+}
+
+/** The player's open game of picodev status's challenge on the site; several: picked; none: undefined. */
+async function siteGame(token: string): Promise<any> {
+  if (hasPicodev !== false && !game) await refreshStatus();
+  const slug = slugOf(game?.challenge);
+  const games = await siteCall('GET', '/api/me/games', undefined, token);
+  const mine = (Array.isArray(games) ? games : [])
+    .filter((g) => Number.isSafeInteger(g?.game) && slugOf(g?.challenge) && (!slug || g.challenge === slug));
+  if (mine.length < 2) return mine[0];
+  const pick = await vscode.window.showQuickPick(mine.map((g) => ({ label: String(titleOf(g.title) || g.challenge), description: g.challenge, g })),
+    { title: t('Which game?') });
+  if (!pick) throw new CtfError('cancelled');
+  return pick.g;
+}
+
+async function hint(): Promise<unknown> {
+  const token = await playerToken();
+  const g = token && (await siteGame(token));
+  if (!token || !g) {
+    return onGameScreen(t('Hints are asked for on the game screen, which shows a hint\'s cost in points before revealing it. Open the game screen?'));
+  }
+  const [c, state] = await Promise.all([siteCall('GET', `/api/challenges/${g.challenge}`), siteCall('GET', `/api/games/${g.game}`, undefined, token)]);
+  const opened = new Set(Array.isArray(state?.hints) ? state.hints : []);
+  const hints = (Array.isArray(c?.hints) ? c.hints : []).filter((h: any) => Number.isInteger(h?.n) && h.n >= 1 && h.n <= 32);
+  if (!hints.length) return void vscode.window.showInformationMessage(t('This challenge has no hint.'));
+  const pick: any = await vscode.window.showQuickPick(hints.map((h: any) => ({
+    label: String(h.title ?? h.n), description: opened.has(h.n) ? t('opened') : t('{0} points', Number(h.cost) || 0), h,
+  })), { title: t('Ask for a hint') });
+  if (!pick) return;
+  const h = pick.h;
+  const open = t('Open the hint');
+  if (!opened.has(h.n) && (await vscode.window.showWarningMessage(
+    t('Open the hint "{0}"? It costs {1} points, taken from what this challenge brings you.', String(h.title ?? h.n), Number(h.cost) || 0),
+    { modal: true }, open)) !== open) return;
+  const r = await siteCall('POST', `/api/games/${g.game}/hints/${h.n}`, undefined, token);
+  // plain text in a modal, never rendered Markdown
+  void vscode.window.showInformationMessage(String(h.title ?? h.n), { modal: true, detail: String(r?.text ?? '') });
+  return r;
+}
+
+async function abandon(): Promise<unknown> {
+  const token = await playerToken();
+  const g = token && (await siteGame(token));
+  if (!token || !g) return onGameScreen(t('A game is abandoned on the game screen, after its own confirmation. Open the game screen?'));
+  const yes = t('Abandon');
+  if ((await vscode.window.showWarningMessage(t('Abandon the game of {0}? It closes now.', g.challenge), { modal: true }, yes)) !== yes) return;
+  await siteCall('POST', `/api/games/${g.game}/close`, undefined, token);
+  void vscode.window.showInformationMessage(t('Game abandoned.'));
+  await refreshStatus();
+  return g.game;
+}
+
+// --- Courses --------------------------------------------------------------------------------------------------------
+
+/** The catalogue's courses, and which ones the player read (GET /api/me/courses) when signed in. */
+async function readCourses(): Promise<NonNullable<typeof courseList>> {
+  const cat = await siteCall('GET', '/api/catalogue');
+  const token = await playerToken();
+  const read = token ? (await siteCall('GET', '/api/me/courses', undefined, token))?.read : [];
+  const list = Array.isArray(cat?.courses) ? cat.courses : [];
+  return list.filter((c: any) => slugOf(c?.slug)).map((c: any) => ({
+    slug: c.slug, title: String(titleOf(c.title) || c.slug), read: Array.isArray(read) && read.includes(c.slug),
+  }));
+}
+
+async function pickCourse(): Promise<string | undefined> {
+  const list = await readCourses();
+  return (await vscode.window.showQuickPick(list.map((c) => ({ label: c.title, description: c.slug, slug: c.slug })),
+    { title: t('Course') }))?.slug;
+}
+
+const courseArg = (x: unknown) => slugOf(typeof x === 'string' ? x : (x as any)?.slug);
+
+/** A course in VS Code's Markdown preview, from GET /api/courses/{slug} (public, no token). */
+async function openCourse(x?: unknown): Promise<string | undefined> {
+  const slug = courseArg(x) ?? (await pickCourse());
+  if (!slug) return;
+  lastCourse = slug;
+  const uri = vscode.Uri.from({ scheme: SCHEME, path: `/${slug}.md` });
+  await vscode.commands.executeCommand('markdown.showPreview', uri);
+  return uri.toString();
+}
+
+async function markRead(x?: unknown): Promise<string | undefined> {
+  const token = await playerToken();
+  if (!token) return void notify(t('Sign VS Code in to keep your progress in the courses.'), t('Sign in'), 'picodevCtf.signIn');
+  const slug = courseArg(x) ?? lastCourse ?? (await pickCourse());
+  if (!slug) return;
+  await siteCall('POST', `/api/me/courses/${slug}/read`, undefined, token);
+  courseList = undefined;
+  render();
+  vscode.window.setStatusBarMessage(t('Course marked as read.'), 5000);
+  return slug;
+}
+
+async function courseItems(): Promise<vscode.TreeItem[]> {
+  try {
+    courseList ??= await readCourses();
+  } catch (e) {
+    log(`! courses: ${e instanceof CtfError ? e.code : e}`);
+    return []; // the welcome
+  }
+  return [
+    ...courseList.map((c) => Object.assign(item(c.title, c.read ? 'pass-filled' : 'book', 'picodevCtf.openCourse', [c.slug]),
+      { description: c.read ? t('read') : undefined, contextValue: 'course', slug: c.slug })),
+    signedIn ? item(t('Sign out'), 'sign-out', 'picodevCtf.signOut') : item(t('Sign in to keep your progress'), 'account', 'picodevCtf.signIn'),
+  ];
 }
 
 // --- Views ----------------------------------------------------------------------------------------------------------
@@ -655,6 +874,7 @@ function actionItems(): vscode.TreeItem[] {
   const items = [nextItem(nextStep())];
   if (!game) items.push(item(t('Join a game'), 'sign-in', 'picodevCtf.login'), item(t('Start a game'), 'search', 'picodevCtf.launch'));
   if (!hasPicodev) items.push(item(t('Open a starter project'), 'remote', 'picodevCtf.openStarter'));
+  items.push(signedIn ? item(t('Sign out'), 'sign-out', 'picodevCtf.signOut') : item(t('Sign in (courses, hints)'), 'account', 'picodevCtf.signIn'));
   if (game) {
     items.push(
       item(t('Build'), 'tools', 'picodevCtf.build'),
@@ -763,6 +983,7 @@ function render() {
   void vscode.commands.executeCommand('setContext', 'picodevCtf.picodev', hasPicodev === true);
   void vscode.commands.executeCommand('setContext', 'picodevCtf.game', !!game);
   void vscode.commands.executeCommand('setContext', 'picodevCtf.pending', !!pending);
+  void vscode.commands.executeCommand('setContext', 'picodevCtf.signedIn', signedIn);
   if (hasPicodev) {
     status.text = game ? statusText(game) : t('$(target) no game');
     status.tooltip = game ? t('Picodev CTF game (picodev status)') : t('Join a game');
@@ -809,7 +1030,7 @@ export function activate(context: vscode.ExtensionContext) {
     },
   };
 
-  const views = { actions: new Tree(actionItems), game: new Tree(gameItems), courses: new Tree(() => []), author: new Tree(authorItems) };
+  const views = { actions: new Tree(actionItems), game: new Tree(gameItems), courses: new Tree(courseItems), author: new Tree(authorItems) };
   trees.push(...Object.values(views));
   const authorChanged = () => {
     drafts = undefined;
@@ -831,7 +1052,19 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeWorkspaceFolders(() => views.author.changed.fire()),
     vscode.window.registerUriHandler({ handleUri: (uri) => void guarded(handleUri)(uri) }),
     vscode.lm.registerMcpServerDefinitionProvider('picodev-ctf-author', mcp),
-    vscode.workspace.onDidChangeConfiguration((e) => e.affectsConfiguration('picodevCtf.url') && mcpChanged.fire()),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (!e.affectsConfiguration('picodevCtf.url')) return;
+      mcpChanged.fire();
+      void refreshPlayer();
+    }),
+    secrets.onDidChange((e) => e.key.startsWith('player:') && void refreshPlayer()),
+    vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
+      provideTextDocumentContent: async (uri) => {
+        const slug = courseSlug(uri.path);
+        if (!slug) throw new CtfError('bad_course');
+        return courseText(await siteCall('GET', `/api/courses/${slug}`), vscode.env.language.startsWith('fr') ? 'fr' : 'en');
+      },
+    }),
     command('picodevCtf.setToken', setToken),
     command('picodevCtf.forgetToken', forgetToken),
     command('picodevCtf.newChallenge', authored(newChallenge)),
@@ -851,17 +1084,23 @@ export function activate(context: vscode.ExtensionContext) {
     command('picodevCtf.console', boardConsole),
     command('picodevCtf.gameScreen', gameScreen),
     command('picodevCtf.status', refreshStatus),
-    command('picodevCtf.hint', () => onGameScreen(
-      t('Hints are asked for on the game screen, which shows a hint\'s cost in points before revealing it. Open the game screen?'))),
-    command('picodevCtf.abandon', () => onGameScreen(
-      t('A game is abandoned on the game screen, after its own confirmation. Open the game screen?'))),
+    command('picodevCtf.hint', hint),
+    command('picodevCtf.abandon', abandon),
+    command('picodevCtf.signIn', signIn),
+    command('picodevCtf.signOut', signOut),
+    command('picodevCtf.openCourse', openCourse),
+    command('picodevCtf.markRead', markRead),
     command('picodevCtf.courses', async () => vscode.env.openExternal(vscode.Uri.parse(`${settingUrl()}/cours`))),
     command('picodevCtf.openStarter', openStarter),
   );
   render();
   void refreshStatus();
+  void refreshPlayer();
 
+  // the Markdown preview's plugin, for picodev-course documents only (src/course.ts)
+  const extendMarkdownIt = (md: any) => coursePlugin(md, settingUrl);
   return testing ? {
+    extendMarkdownIt,
     mcp,
     logText: () => logged,
     statusText: () => (status as any).text as string,
@@ -869,7 +1108,7 @@ export function activate(context: vscode.ExtensionContext) {
     views,
     watchHtml: () => watchPanel?.webview.html,
     noPicodev: () => (hasPicodev = false), // a window outside a challenge's container
-  } : undefined;
+  } : { extendMarkdownIt };
 }
 
 export function deactivate() {}

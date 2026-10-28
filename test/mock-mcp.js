@@ -5,6 +5,10 @@
 const http = require('http');
 
 const TOKEN = 'ctfa_' + 'Q'.repeat(20) + 'secretpart' + 'Z'.repeat(13);
+// the player's tokens (ctfp_ and 43 characters) the claims give, and their sign-in codes
+const PLAYER = 'ctfp_' + 'P'.repeat(20) + 'playerpart' + 'Y'.repeat(13);
+const PLAYER2 = 'ctfp_' + 'R'.repeat(20) + 'otherplayr' + 'X'.repeat(13);
+const CONNECT = { M4N5P6Q7: { token: PLAYER, pseudonym: 'Lucie' }, T8V9W0X1: { token: PLAYER2, pseudonym: 'Mallory' } };
 const TEMPLATE = {
   'challenge.json': '{\n  "slug": "SLUG",\n  "platform": "nano"\n}',
   'blink/blink.ino': 'void setup() {}\nvoid loop() {}\n',
@@ -16,12 +20,16 @@ const TEMPLATE = {
 
 async function start() {
   const state = {
-    requests: [], // {url, headers, body}
+    requests: [], // {method, url, headers, body}
     drafts: new Map([
       [66, { id: 66, slug: 'c-evil', state: 'draft', revision: 1, with_agent: true, files: { 'ok.txt': 'y', '../escape.txt': 'x' } }],
       [67, { id: 67, slug: 'c-abs', state: 'draft', revision: 1, with_agent: true, files: { 'ok.txt': 'y', '/tmp/picodev-ctf-abs.txt': 'x' } }],
     ]),
     runPolls: 0,
+    players: new Set(), // the player tokens the site knows
+    read: new Set(['gpio']), // the courses the player read
+    claimable: true, // false: a site without the claim (404 without unknown_code)
+    redirect: '', // a route answered by a redirect to /stolen
     lintErrors: [], // what draft_lint answers
   };
   const row = (d) => ({ id: d.id, slug: d.slug, state: d.state, revision: d.revision, title: { fr: 'T', en: 'T' }, with_agent: d.with_agent,
@@ -77,12 +85,43 @@ async function start() {
     let body = '';
     req.on('data', (c) => (body += c));
     req.on('end', () => {
-      state.requests.push({ url: req.url, headers: req.headers, body });
+      state.requests.push({ method: req.method, url: req.url, headers: req.headers, body });
       const json = (code, value) => {
         res.writeHead(code, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(value));
       };
+      if (state.redirect === `${req.method} ${req.url}`) {
+        res.writeHead(302, { Location: '/stolen' });
+        return res.end();
+      }
       if (req.method === 'GET' && req.url === '/api/catalogue') return json(200, CATALOGUE);
+      if (req.method === 'GET' && req.url === '/api/courses/gpio') return json(200, COURSE);
+      if (req.method === 'GET' && req.url === '/api/challenges/blink-1') return json(200, CHALLENGE);
+      if (req.method === 'POST' && req.url === '/api/device/claim') {
+        if (!state.claimable) return json(404, { detail: 'Not Found' });
+        const c = CONNECT[JSON.parse(body || '{}').code];
+        if (!c) return json(404, { detail: 'unknown_code' });
+        state.players.add(c.token);
+        return json(200, { token: c.token, name: 'VS Code', pseudonym: c.pseudonym, expires_at: '2027-01-25T00:00:00Z' });
+      }
+      const player = req.headers['x-ctf-player-token'];
+      const route = `${req.method} ${req.url}`;
+      if (/^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|DELETE \/api\/device)$/.test(route)) {
+        if (state.fail401) return json(401, { detail: 'not_signed_in' });
+        if (!state.players.has(player)) return json(401, { detail: 'player_token_required' });
+        if (route === 'GET /api/me/courses') return json(200, { read: [...state.read] });
+        if (route === 'GET /api/me/games') return json(200, GAMES);
+        if (route === 'GET /api/games/12') return json(200, { game: 12, challenge: 'blink-1', open: true, hints: [1], submissions: [] });
+        if (route === 'POST /api/games/12/hints/2') return json(200, { text: 'Look at <b>pin 13</b> and [here](command:foo).', cost: 20 });
+        if (route === 'POST /api/games/12/close' || route === 'DELETE /api/device') {
+          if (route === 'DELETE /api/device') state.players.delete(player);
+          res.writeHead(204);
+          return res.end();
+        }
+        const read = /^POST \/api\/me\/courses\/([a-z0-9-]+)\/read$/.exec(route);
+        if (read) return read[1] === 'gpio' || read[1] === 'uart' ? (state.read.add(read[1]), json(200, {})) : json(404, { detail: 'unknown_course' });
+        return json(404, { detail: 'unknown_game' });
+      }
       if (req.method !== 'POST' || req.url !== '/mcp/author') return json(404, {});
       if (req.headers['x-ctf-author-token'] !== TOKEN) return json(401, { detail: 'author_token_required' });
       const msg = JSON.parse(body);
@@ -120,7 +159,30 @@ const CATALOGUE = {
   ],
 };
 
-// the game codes the suite uses: never in a file, a setting, a log or a view
-const CODES = ['AB12CD34', 'ab12cd34', 'ZX90A7K3', 'zx-90', 'K7M2P9QR'];
+const COURSE = {
+  slug: 'gpio', title: { fr: 'Broches', en: 'GPIO' },
+  chapters: [
+    { id: 'intro', order: 1, en: null, fr: { title: 'Intro', version: 1, body: [
+      'Text <img src=https://x.test/track.png> and <b>bold</b>.',
+      '',
+      '<div onclick="x()">block</div>',
+      '',
+      '![tracker](https://x.test/y.png) ![pins](img/pins.png) ![up](img/../secret.png) ![abs](/img/a.png)',
+      '',
+      '[run](command:foo) [code](vscode://x) [file](file:///etc/passwd) [js](javascript:alert(1)) [other](https://x.test/a)',
+      '[site](https://ctf.test/cours/gpio) [rel](02-next.md) <https://x.test/auto>',
+    ].join('\n') } },
+    { id: 'more', order: 2, fr: { title: 'Suite', version: 1, body: 'Done.' }, en: { title: 'More', version: 1, body: 'Done.' } },
+  ],
+};
+// GET /api/challenges/blink-1's hints, GET /api/me/games: two games, one of picodev status's challenge
+const CHALLENGE = { slug: 'blink-1', hints: [{ n: 1, title: 'Where', cost: 10 }, { n: 2, title: 'Which pin', cost: 20 }] };
+const GAMES = [
+  { game: 12, challenge: 'blink-1', title: { fr: 'Clignote', en: 'Blink' }, platform: 'nano', hints_used: 1 },
+  { game: 13, challenge: 'uart-2', title: { fr: 'UART', en: 'UART' }, platform: 'nano', hints_used: 0 },
+];
 
-module.exports = { start, TOKEN, CODES };
+// the game and sign-in codes the suite uses: never in a file, a setting, a log or a view
+const CODES = ['AB12CD34', 'ab12cd34', 'ZX90A7K3', 'zx-90', 'K7M2P9QR', ...Object.keys(CONNECT)];
+
+module.exports = { start, TOKEN, PLAYER, PLAYER2, CODES };

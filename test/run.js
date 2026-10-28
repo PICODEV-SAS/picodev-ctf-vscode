@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const assert = require('assert');
 const { runTests } = require('@vscode/test-electron');
-const { TOKEN, CODES } = require('./mock-mcp');
+const { TOKEN, PLAYER, PLAYER2, CODES } = require('./mock-mcp');
 
 const root = path.join(__dirname, '..');
 const src = fs.readFileSync(path.join(root, 'src/extension.ts'), 'utf8');
@@ -60,11 +60,11 @@ exit 0
       cachePath: process.env.VSCODE_TEST_CACHE, // an already downloaded VS Code, if any
       launchArgs: [ws, '--disable-extensions', '--password-store=basic', '--user-data-dir', udd],
     });
-    // the author token, the game codes and the spectator link of the suite (test/suite.js)
-    const secrets = [TOKEN, ...CODES, 'sess_1.view-2'];
+    // the author and player tokens, the game and sign-in codes and the spectator link of the suite (test/suite.js)
+    const secrets = [TOKEN, PLAYER, PLAYER2, ...CODES, 'sess_1.view-2'];
     const leaks = [...walk(ws), path.join(udd, 'User', 'settings.json'), ...walk(path.join(udd, 'logs'))]
       .filter((f) => fs.existsSync(f) && secrets.some((s) => fs.readFileSync(f).includes(s)));
-    assert.deepStrictEqual(leaks, [], 'the author token, a game code or a spectator link was written to disk');
+    assert.deepStrictEqual(leaks, [], 'a token, a code or a spectator link was written to disk');
     assert.ok(walk(path.join(udd, 'logs')).some((f) => fs.readFileSync(f, 'utf8').includes('Check: no error.')), 'the output channel log was not found');
     console.log('token and code scan: workspace, user settings and logs clean');
   } catch (e) {

@@ -11,7 +11,10 @@ export class CtfError extends Error {
   }
 }
 
-/** The origin of an https address, the key of its secrets; anything else (http://, credentials, a path) refused. */
+/**
+ * The origin of an https address (http for localhost and 127.0.0.1 only), the key of its secrets; anything else
+ * (http://, credentials, a path) refused.
+ */
 export function checkUrl(raw: string): string {
   let u: URL;
   try {
@@ -19,7 +22,8 @@ export function checkUrl(raw: string): string {
   } catch {
     throw new CtfError('bad_url', raw);
   }
-  if (u.protocol !== 'https:' || u.username || u.password || u.search || u.hash || !['', '/'].includes(u.pathname)) {
+  const local = u.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(u.hostname);
+  if ((u.protocol !== 'https:' && !local) || u.username || u.password || u.search || u.hash || !['', '/'].includes(u.pathname)) {
     throw new CtfError('bad_url', raw);
   }
   return u.origin;

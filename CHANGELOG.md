@@ -2,6 +2,26 @@
 
 Picodev CTF for VS Code, newest first. A version is a `vX.Y.Z` tag of this repository.
 
+## 0.4.0
+
+- VS Code's sign-in (J8b L3): *Sign in* opens the site's profile page, whose "VS Code" card gives a
+  short code, pasted here or brought back by `vscode://picodev.picodev-ctf/connect?code=<code>`. A
+  link never signs in on its own: "Sign in to <address>?", then the claimed account's pseudonym to
+  confirm; only then is the `ctfp_…` token kept (in secret storage, `player:<origin>`), replacing
+  the one before. It goes in `X-CTF-Player-Token` to the contract's routes only (course progress,
+  the player's games, hints, close, `DELETE /api/device`), never to the catalogue, courses or
+  images. *Sign out* revokes it on the site, then erases it; a `player_token_required` refusal
+  erases it and offers to sign in again, any other error keeps it.
+- *Ask for a hint* and *Abandon the game*, signed in: the game of `picodev status`'s challenge on the
+  site, its hints and their cost, a confirmation with the cost, the hint as plain text in a modal;
+  or a confirmation, then the game closed. Not signed in: the game screen, as before.
+- *Courses* view: the catalogue's courses, the read ones checked. A course opens in VS Code's
+  Markdown preview (`picodev-course:` documents) through a markdown-it plugin active for that scheme
+  only: no HTML, links to `picodevCtf.url`'s origin only, the course's own `img/<name>` images only
+  (loaded from the site), everything else as text. *Mark the course as read*.
+- `picodevCtf.url` is a machine setting (an open folder's settings cannot change it), `http` is
+  accepted for `localhost` and `127.0.0.1`, and no request follows a redirect.
+
 ## 0.3.0
 
 - *Author* view: *My drafts* (`draft_list`; a click opens the draft, no picker), and the open draft

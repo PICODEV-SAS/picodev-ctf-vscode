@@ -13,7 +13,7 @@
   "command.playerSend": "Send to the bench (picodev send)",
   "command.status": "Refresh the game status",
   "command.openStarter": "Open a starter project in VS Code",
-  "config.url": "Address of the Picodev CTF (https only). The author token and, for a password-protected site, its password are kept per address in VS Code's secret storage.",
+  "config.url": "Address of the Picodev CTF (https only; http for localhost and 127.0.0.1). A machine setting: an open folder cannot change it. The author token, VS Code's sign-in and, for a password-protected site, its password are kept per address in VS Code's secret storage.",
   "command.launch": "Start a game",
   "command.build": "Build (picodev build)",
   "command.watch": "Watch the game",
@@ -31,7 +31,7 @@
   "welcome.game.none": "Next: join a game. Start it on the site with \"use my machine\", then enter the 8-character code its screen shows.\n[Join a game](command:picodevCtf.login)\n[Start a game](command:picodevCtf.launch)",
   "welcome.game.pending": "Next: join the game. A code came from the game screen; it is kept 15 minutes in this window's memory only.\n[Join](command:picodevCtf.joinPending)",
   "welcome.game.pendingStarter": "Next: open the starter project in its container. A code came from the game screen (kept 15 minutes in this window's memory only); join from the container's window, where picodev is.\n[Open the starter project](command:picodevCtf.openStarter)\n[Join](command:picodevCtf.joinPending)",
-  "welcome.courses": "Next: read a course on the site. Reading them here, with your progress kept, comes with the player's sign-in in the extension.\n[Browse the courses](command:picodevCtf.courses)",
+  "welcome.courses": "Next: read a course. The courses of the catalogue show here; sign VS Code in on the site to keep your progress.\n[Open a course](command:picodevCtf.openCourse)\n[Sign in](command:picodevCtf.signIn)\n[Browse the courses on the site](command:picodevCtf.courses)",
   "welcome.author": "Next: set your author token. Writing a challenge needs the author role and a ctfa_… token, made in your profile on the site.\n[Set the author token](command:picodevCtf.setToken)\n[picodev.fr](https://picodev.fr)",
   "walkthrough.play.title": "Play a challenge from VS Code",
   "walkthrough.play.description": "From the catalogue to the flag: your machine, the challenge's container, the game's bench.",
@@ -58,5 +58,9 @@
   "walkthrough.flag.title": "Hand in the flag on the game screen",
   "walkthrough.flag.description": "The flag is handed in on the game screen, never from the extension. Hints and abandon are there too.\n[Game screen](command:picodevCtf.gameScreen)",
   "walkthrough.flag.svg": "media/walkthrough/en/flag.svg",
-  "walkthrough.flag.alt": "In Actions, click Game screen; on the game screen, paste the flag and submit it."
+  "walkthrough.flag.alt": "In Actions, click Game screen; on the game screen, paste the flag and submit it.",
+  "command.signIn": "Sign VS Code in (courses, hints)",
+  "command.signOut": "Sign VS Code out",
+  "command.openCourse": "Open a course",
+  "command.markRead": "Mark the course as read"
 }

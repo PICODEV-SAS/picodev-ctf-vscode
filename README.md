@@ -16,10 +16,13 @@ and plain text. The interface is in English and French.
 
 ## Réglage
 
-- `picodevCtf.url` : adresse du CTF, `https://ctf.picodev.fr` par défaut, `https` seulement.
+- `picodevCtf.url` : adresse du CTF, `https://ctf.picodev.fr` par défaut, `https` seulement (`http`
+  pour `localhost` et `127.0.0.1`). Réglage de la machine : le `.vscode/settings.json` d'un dossier
+  ouvert ne peut pas le changer. Aucune requête ne suit une redirection.
 
-Le jeton d'auteur et, pour un site protégé par mot de passe, ce mot de passe sont gardés dans le stockage secret
-de VS Code, par adresse : jamais dans un fichier, un réglage ni le journal.
+Le jeton d'auteur, la connexion de VS Code (jeton `ctfp_…`) et, pour un site protégé par mot de passe, ce
+mot de passe sont gardés dans le stockage secret de VS Code, par adresse : jamais dans un fichier, un
+réglage ni le journal.
 
 ## Auteurs
 
@@ -74,7 +77,7 @@ commande `picodev` du conteneur, sans shell et avec des arguments vérifiés :
 | *Console de la carte* | `picodev events --follow` dans un terminal à part (lancé sans shell). |
 | *Écran de jeu* | Ouvre `<adresse>/defis/<défi>` dans le navigateur. Le drapeau s'y rend, jamais depuis l'extension. |
 | *État* | `picodev status`, aussi toutes les 60 s et après chaque envoi. |
-| *Demander un indice*, *Abandonner la partie* | Ouvrent l'écran de jeu, qui montre le coût de l'indice ou demande confirmation (l'extension n'a pas encore de connexion joueur). |
+| *Demander un indice*, *Abandonner la partie* | VS Code connecté : la partie du défi de `picodev status` sur le site, ses indices et leur coût, une confirmation qui rappelle le coût, puis le texte de l'indice en texte brut ; ou une confirmation, puis la partie fermée. Sans connexion : l'écran de jeu, qui montre le coût ou demande confirmation. |
 | *Ouvrir un projet de départ* | Ouvre `PICODEV-SAS/picodev-starter-<famille>` dans un conteneur. |
 
 La barre d'état montre la partie (défi, niveau, minutes restantes ; clic : la vue *Partie*) ou
@@ -94,6 +97,24 @@ stricte). Avec une image plus ancienne sans `picodev watch`, une notification le
 
 Sans `picodev` (VS Code hors du conteneur), l'extension propose d'ouvrir le projet de départ de la
 famille dans VS Code.
+
+**Connecter VS Code.** *Se connecter* (vues *Actions* et *Cours*) ouvre la page de profil du site :
+la carte « VS Code » y donne un code de 8 caractères, valable 10 minutes, à coller dans VS Code ou à
+suivre par « Revenir dans VS Code » (`vscode://picodev.picodev-ctf/connect?code=<code>`). Le lien ne
+connecte jamais tout seul : VS Code demande « Se connecter à <adresse> ? », puis montre le pseudonyme
+du compte, à comparer avec celui de la carte ; la connexion n'est gardée (et ne remplace la
+précédente) qu'après cette confirmation. VS Code ne voit ni le mot de passe ni la clé d'accès : il
+garde un jeton `ctfp_…` qui ne sert qu'aux cours (avancement), aux indices et à l'abandon de ses
+parties, envoyé dans l'en-tête `X-CTF-Player-Token` à ces seules routes. *Se déconnecter* le révoque
+sur le site, puis l'efface. Un jeton expiré ou révoqué sur le site est effacé à la première requête
+refusée, et VS Code propose de se reconnecter.
+
+**Cours.** La vue *Cours* liste les cours du catalogue, ceux déjà lus cochés quand VS Code est
+connecté. Un cours s'ouvre dans l'aperçu Markdown de VS Code (document `picodev-course:`), tenu
+serré : aucun HTML (montré comme texte), liens vers le site de `picodevCtf.url` seulement, images du
+cours seulement (`img/<nom>`, chargées depuis le site) ; tout le reste est rendu comme texte, les
+autres aperçus Markdown ne changent pas. *Marquer comme lu* note le cours (le dernier ouvert, ou celui
+de la ligne) dans l'avancement du site.
 
 ## Développement
 

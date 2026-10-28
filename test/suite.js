@@ -383,9 +383,157 @@ exports.run = async () => {
     assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nK7M2P9QR\n--$/m);
     assert.strictEqual((await view('actions'))[0], 'Next: start a game', 'the code stayed after joining');
 
+    // --- VS Code's sign-in (J8b L3): a workspace's picodevCtf.url is never read (machine scope)
+    // VS Code refuses to write it there; a value written by hand is not applied
+    await assert.rejects(config.update('url', 'https://evil.test', vscode.ConfigurationTarget.Workspace));
+    fs.mkdirSync(path.join(ws, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(ws, '.vscode/settings.json'), JSON.stringify({ 'picodevCtf.url': 'https://evil.test' }));
+    await new Promise((ok) => setTimeout(ok, 1500));
+    assert.strictEqual(vscode.workspace.getConfiguration('picodevCtf').get('url'), 'https://ctf.test');
+    await exec('picodevCtf.gameScreen');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/blink-1');
+    fs.rmSync(path.join(ws, '.vscode'), { recursive: true, force: true });
+
+    const reqs = () => m.state.requests;
+    const claims = () => reqs().filter((r) => r.url === '/api/device/claim');
+    const tokenOf = (route) => reqs().filter((r) => `${r.method} ${r.url}` === route).at(-1)?.headers['x-ctf-player-token'];
+    const loginsBefore = logins();
+    // a link's code checked before any request
+    for (const q of ['', 'code=ABCDEFGI', 'code=AB12CD3', 'code=M4N5P6Q7X', 'code=M4N5%3BP6Q7']) {
+      await api.handleUri(vscode.Uri.parse(`vscode://picodev.picodev-ctf/connect?${q}`));
+      assert.match(lastError(), /sign-in code is 8 characters/, q);
+    }
+    assert.strictEqual(claims().length, 0);
+    // never silent: the address asked first; no answer, no claim
+    await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/connect?code=m4n5-p6q7&url=https%3A%2F%2Fevil.test'));
+    assert.strictEqual(asked.showWarningMessage.at(-1)[0], 'Sign in to https://ctf.test?');
+    assert.strictEqual(asked.showWarningMessage.at(-1)[1].modal, true);
+    assert.strictEqual(claims().length, 0, 'claimed before the player said yes');
+    // yes, then the pseudonym not confirmed: the claimed token is revoked, nothing kept
+    answers.showWarningMessage.push('Sign in', undefined);
+    assert.strictEqual(await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/connect?code=M4N5P6Q7')), undefined);
+    assert.deepStrictEqual(JSON.parse(claims()[0].body), { code: 'M4N5P6Q7' });
+    assert.ok(!claims()[0].headers['x-ctf-player-token'] && !claims()[0].headers.cookie);
+    assert.match(asked.showWarningMessage.at(-1)[0], /^Signed in as Lucie\. /);
+    assert.strictEqual(tokenOf('DELETE /api/device'), mock.PLAYER);
+    assert.ok(!(await view('actions')).includes('Sign out'), 'kept without the confirmation');
+    // confirmed: kept
+    answers.showWarningMessage.push('Sign in', 'Yes, it is mine');
+    assert.strictEqual(await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/connect?code=M4N5P6Q7')), 'Lucie');
+    await new Promise((ok) => setTimeout(ok, 200));
+    assert.ok((await view('actions')).includes('Sign out'));
+    // another account's link: the token kept is replaced only after the confirmation
+    answers.showWarningMessage.push('Sign in', undefined);
+    await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/connect?code=T8V9W0X1'));
+    assert.strictEqual(tokenOf('DELETE /api/device'), mock.PLAYER2);
+    assert.ok(!m.state.players.has(mock.PLAYER2));
+    assert.strictEqual(logins(), loginsBefore, 'a sign-in code went to picodev login');
+    assert.ok(m.state.players.has(mock.PLAYER), 'the kept token was revoked');
+
+    // --- Courses view: the catalogue's courses, the read ones from GET /api/me/courses
+    const courses = await api.views.courses.getChildren();
+    assert.deepStrictEqual(courses.map((i) => [labelOf(i), i.description, i.command.command]),
+      [['GPIO', 'read', 'picodevCtf.openCourse'], ['Sign out', undefined, 'picodevCtf.signOut']]);
+    assert.strictEqual(tokenOf('GET /api/me/courses'), mock.PLAYER);
+    assert.strictEqual(tokenOf('GET /api/catalogue'), undefined);
+    // the preview: the course's own image on the pinned origin, a link to the site, no HTML, nothing else
+    assert.strictEqual(await exec('picodevCtf.openCourse', 'gpio'), 'picodev-course:/gpio.md');
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.parse('picodev-course:/gpio.md'));
+    assert.match(doc.getText(), /^# Intro\n\nText <img/);
+    assert.strictEqual(tokenOf('GET /api/courses/gpio'), undefined);
+    const rendered = await exec('markdown.api.render', doc);
+    const attrs = (re) => [...rendered.matchAll(re)].map((x) => x[1]);
+    assert.deepStrictEqual(attrs(/<img[^>]*\ssrc="([^"]*)"/g), ['https://ctf.test/api/courses/gpio/img/pins.png'], rendered);
+    assert.deepStrictEqual(attrs(/\shref="([^"]*)"/g), ['https://ctf.test/cours/gpio'], rendered);
+    // (an empty <div data-line> is the preview's own line marker around a block)
+    assert.doesNotMatch(rendered, /<b>|<div[^>]*onclick|<a [^>]*(command|vscode|file|javascript):|src="https:\/\/x/, rendered);
+    assert.match(rendered, /&lt;div onclick=/);
+    assert.match(rendered, /&lt;b&gt;bold&lt;\/b&gt;/);
+    assert.match(rendered, /tracker/);
+    // the same text in another document: the preview as it was
+    const other = await exec('markdown.api.render', await vscode.workspace.openTextDocument({ language: 'markdown', content: doc.getText() }));
+    assert.match(other, /<b>bold<\/b>/);
+    assert.match(other, /href="command:foo"/);
+    // Mark as read: the course last opened
+    assert.strictEqual(await exec('picodevCtf.markRead'), 'gpio');
+    assert.strictEqual(tokenOf('POST /api/me/courses/gpio/read'), mock.PLAYER);
+
+    // --- hint and abandon on the site: the game of picodev status's challenge, its hints, the cost confirmed
+    const shownBefore = opened.length;
+    answers.showQuickPick.push('Which pin');
+    answers.showWarningMessage.push('Open the hint');
+    assert.deepStrictEqual(await exec('picodevCtf.hint'), { text: 'Look at <b>pin 13</b> and [here](command:foo).', cost: 20 });
+    assert.deepStrictEqual((await asked.showQuickPick.at(-1)[0]).map((i) => [i.label, i.description]), [['Where', 'opened'], ['Which pin', '20 points']]);
+    assert.match(asked.showWarningMessage.at(-1)[0], /"Which pin".* 20 points/);
+    assert.deepStrictEqual(asked.showInformationMessage.at(-1), ['Which pin', { modal: true, detail: 'Look at <b>pin 13</b> and [here](command:foo).' }]);
+    assert.strictEqual(tokenOf('GET /api/me/games'), mock.PLAYER);
+    assert.strictEqual(tokenOf('GET /api/games/12'), mock.PLAYER);
+    assert.strictEqual(tokenOf('POST /api/games/12/hints/2'), mock.PLAYER);
+    assert.strictEqual(tokenOf('GET /api/challenges/blink-1'), undefined);
+    answers.showWarningMessage.push(undefined);
+    await exec('picodevCtf.abandon');
+    assert.ok(!reqs().some((r) => r.url === '/api/games/12/close'), 'closed without the confirmation');
+    answers.showWarningMessage.push('Abandon');
+    assert.strictEqual(await exec('picodevCtf.abandon'), 12);
+    assert.strictEqual(tokenOf('POST /api/games/12/close'), mock.PLAYER);
+    assert.strictEqual(opened.length, shownBefore, 'the game screen opened while signed in');
+
+    // --- a redirect is never followed
+    m.state.redirect = 'GET /api/me/games';
+    await exec('picodevCtf.hint');
+    assert.match(lastError(), /cannot be reached/);
+    assert.ok(!reqs().some((r) => r.url === '/stolen'), 'a redirect was followed');
+    m.state.redirect = '';
+    // another 401 keeps the token; player_token_required erases it and offers to sign in
+    m.state.fail401 = true;
+    await exec('picodevCtf.markRead', 'gpio');
+    m.state.fail401 = false;
+    assert.strictEqual(await exec('picodevCtf.markRead', 'gpio'), 'gpio', 'a 401 other than player_token_required erased the token');
+    m.state.players.clear();
+    await exec('picodevCtf.markRead', 'gpio');
+    assert.match(infos().at(-1), /refused VS Code's sign-in/);
+    const n401 = reqs().length;
+    await exec('picodevCtf.markRead', 'gpio');
+    assert.strictEqual(reqs().length, n401, 'a request after player_token_required');
+    assert.match(infos().at(-1), /^Sign VS Code in/);
+    await new Promise((ok) => setTimeout(ok, 200));
+    assert.strictEqual(labelOf((await api.views.courses.getChildren()).at(-1)), 'Sign in to keep your progress');
+    answers.showWarningMessage.push('Open the game screen');
+    assert.strictEqual(await exec('picodevCtf.hint'), true, 'without sign-in: the game screen');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/blink-1');
+
+    // --- Se connecter: the profile page, then the pasted code (no address asked); Se déconnecter revokes, then erases
+    answers.showInputBox.push('m4n5 p6q7');
+    answers.showWarningMessage.push('Yes, it is mine');
+    const warned2 = asked.showWarningMessage.length;
+    assert.strictEqual(await exec('picodevCtf.signIn'), 'Lucie');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/profil');
+    assert.strictEqual(asked.showWarningMessage.length, warned2 + 1);
+    await exec('picodevCtf.signOut');
+    assert.strictEqual(tokenOf('DELETE /api/device'), mock.PLAYER);
+    assert.ok(!m.state.players.has(mock.PLAYER));
+    await exec('picodevCtf.markRead', 'gpio');
+    assert.match(infos().at(-1), /^Sign VS Code in/);
+    // unknown code; a site without the claim yet
+    answers.showInputBox.push('ABCDEFGH');
+    await exec('picodevCtf.signIn');
+    assert.match(lastError(), /unknown, already used or expired/);
+    m.state.claimable = false;
+    answers.showInputBox.push('M4N5P6Q7');
+    await exec('picodevCtf.signIn');
+    assert.match(lastError(), /not available on this site yet/);
+    assert.ok(!fake().includes('M4N5P6Q7') && !fake().includes('T8V9W0X1'), 'a sign-in code went to picodev');
+
+    // the player's token: only on the contract's routes, never in an address or a body
+    const ROUTES = /^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|DELETE \/api\/device)$/;
+    const carried = reqs().filter((r) => r.headers['x-ctf-player-token']);
+    assert.ok(carried.length > 10);
+    assert.deepStrictEqual(carried.map((r) => `${r.method} ${r.url}`).filter((x) => !ROUTES.test(x)), []);
+    assert.ok(reqs().every((r) => ![mock.PLAYER, mock.PLAYER2].some((s) => r.url.includes(s) || r.body.includes(s))));
+
     // --- no token and no game code in a view, the log or the settings
     const shown = (await Promise.all(Object.keys(api.views).map(view))).flat().join('\n');
-    for (const s of [TOKEN, ...mock.CODES]) {
+    for (const s of [TOKEN, mock.PLAYER, mock.PLAYER2, ...mock.CODES]) {
       assert.ok(!shown.includes(s) && !api.logText().includes(s) && !JSON.stringify(config.inspect('url')).includes(s), s);
     }
     assert.ok(!api.logText().includes('sess_1'), 'the spectator link was logged');
