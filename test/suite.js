@@ -238,8 +238,13 @@ exports.run = async () => {
       assert.match(lastError(), /8 characters/, bad);
     }
     assert.ok(!fake().includes('login'), 'picodev ran for a refused code');
+    const watchOut = path.join(process.env.PICODEV_FAKE_DIR, 'watch.out');
+    fs.writeFileSync(watchOut, 'https://ctf.test/regarder#sess_1.view-2\n');
+    const shownWatch = () => api.watchHtml();
     assert.strictEqual(await exec('picodevCtf.login', 'ab12cd34'), 0);
     assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nAB12CD34\n--$/m);
+    assert.match(shownWatch(), /regarder#sess_1/, 'the Regarder page did not open after picodev login');
+    assert.match(fake(), /^login\n(.+\n)+--\nstatus\n--\nwatch\n--$/m);
     assert.strictEqual(await exec('picodevCtf.playerSend'), 0);
     assert.match(fake(), /^send\n--$/m);
     await exec('picodevCtf.status');
@@ -343,7 +348,7 @@ exports.run = async () => {
     fakeSet('watch', { err: "picodev: error: argument command: invalid choice: 'watch'", exit: 2 });
     await exec('picodevCtf.watch');
     assert.match(infos().at(-1), /has no watch command/);
-    fakeSet('watch');
+    fakeSet('watch', { out: 'https://ctf.test/regarder#sess_1.view-2\n' });
 
     // --- Lancer une partie: the public catalogue (no cookie, no token), a challenge opens with poste=machine&retour=vscode
     answers.showQuickPick.push('Blink');
@@ -370,11 +375,11 @@ exports.run = async () => {
     await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/other?code=AB12CD34'));
     assert.strictEqual(logins(), before4, 'picodev ran for a refused link');
     await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/join?code=zx-90%20a7k3&url=https%3A%2F%2Fevil.test&next=x'));
-    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nZX90A7K3\n--$/m);
+    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nZX90A7K3\n--\nstatus\n--\nwatch\n--$/m, 'the join link did not open Regarder');
     assert.ok(!fake().includes('evil'));
 
     // without picodev: the code waits in memory, the views offer the starter project, then "Join"
-    api.noPicodev();
+    api.hasPicodev(false);
     await api.handleUri(vscode.Uri.parse('vscode://picodev.picodev-ctf/join?code=K7M2P9QR'));
     assert.match(infos().at(-1), /kept 15 minutes/);
     assert.ok(!fake().includes('K7M2P9QR'));
@@ -509,6 +514,71 @@ exports.run = async () => {
     assert.strictEqual(await exec('picodevCtf.signIn'), 'Lucie');
     assert.strictEqual(opened.at(-1), 'https://ctf.test/profil');
     assert.strictEqual(asked.showWarningMessage.length, warned2 + 1);
+
+    // --- Lancer une partie, signed in (J8b L4): without picodev, the starter project of the challenge's family first
+    const plays = () => reqs().filter((r) => `${r.method} ${r.url}` === 'POST /api/play');
+    answers.showQuickPick.push('Blink');
+    answers.showWarningMessage.push('Open the starter project');
+    assert.strictEqual(await exec('picodevCtf.launch'), undefined);
+    assert.strictEqual(opened.at(-1), 'vscode://ms-vscode-remote.remote-containers/cloneInVolume?url=https://github.com/PICODEV-SAS/picodev-starter-avr');
+    assert.strictEqual(plays().length, 0, 'a game opened in a window without picodev');
+    // with picodev: a modal, free or paying; no answer, nothing opened
+    api.hasPicodev(true);
+    answers.showQuickPick.push('Blink');
+    await exec('picodevCtf.launch');
+    assert.deepStrictEqual(asked.showWarningMessage.at(-1), ['Launch Blink?', { modal: true, detail: 'A free challenge.' }, 'Launch']);
+    assert.strictEqual(plays().length, 0, 'opened without the confirmation');
+    // yes: POST /api/play with the token, picodev login with its code, then Regarder beside
+    fs.writeFileSync(watchOut, 'https://ctf.test/regarder#sess_1.view-9\n');
+    answers.showQuickPick.push('Blink');
+    answers.showWarningMessage.push('Launch');
+    assert.strictEqual(await exec('picodevCtf.launch'), 14);
+    assert.deepStrictEqual(JSON.parse(plays().at(-1).body), { challenge: 'blink-1' });
+    assert.strictEqual(tokenOf('POST /api/play'), mock.PLAYER);
+    assert.match(fake(), /^login\n--url\nhttps:\/\/ctf\.test\nH3J4K5M6\n--\nstatus\n--\nwatch\n--$/m);
+    assert.match(shownWatch(), /regarder#sess_1\.view-9/);
+    assert.ok((await view('actions')).includes('Watch the game'));
+    // picodev login fails: never its output; the game is open, resumed or abandoned, never opened again
+    fakeSet('login', { out: 'out H3J4K5M6', err: 'picodev-secret-err', exit: 1 });
+    const errors = asked.showErrorMessage.length;
+    answers.showQuickPick.push('Blink');
+    answers.showWarningMessage.push('Launch', 'Abandon');
+    assert.strictEqual(await exec('picodevCtf.launch'), 14);
+    assert.deepStrictEqual(asked.showWarningMessage.at(-1).slice(1), [{ modal: true }, 'Resume on the game screen', 'Abandon']);
+    assert.strictEqual(tokenOf('POST /api/games/14/close'), mock.PLAYER);
+    assert.strictEqual(plays().length, 2);
+    assert.strictEqual(asked.showErrorMessage.length, errors);
+    assert.ok(!api.logText().includes('picodev-secret-err') && !JSON.stringify(asked).includes('picodev-secret-err'), 'the login output was shown');
+    fakeSet('login');
+    // the service's refusals
+    const refused = async (status, body, ...replies) => {
+      m.state.play = [status, body];
+      answers.showQuickPick.push('Blink');
+      answers.showWarningMessage.push('Launch', ...replies);
+      await exec('picodevCtf.launch');
+    };
+    await refused(402, { detail: 'credits_required' }, 'Buy credits');
+    assert.strictEqual(asked.showWarningMessage.at(-1)[0], 'Not enough credits');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/credits');
+    await refused(409, { detail: 'paying_game_open', game: 13 }, 'Resume on the game screen');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/uart-2');
+    await refused(409, { detail: 'game_open', game: 12 }, 'Abandon');
+    assert.strictEqual(tokenOf('POST /api/games/12/close'), mock.PLAYER);
+    await refused(429, { detail: 'token_play_limit' });
+    assert.match(lastError(), /games of the hour/);
+    await refused(429, { detail: 'turns_per_day' });
+    assert.match(lastError(), /No turn left today/);
+    await refused(503, { detail: 'agent_unavailable' }, 'Open the challenge on the site');
+    assert.strictEqual(asked.showWarningMessage.at(-1)[0], 'This challenge is played on the site.');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/defis/blink-1');
+    assert.strictEqual(plays().length, 8);
+    m.state.play = [201, { game: 14, agent_code: 'H3J4K5M6' }];
+    // a course: the site, as before
+    answers.showQuickPick.push('GPIO');
+    await exec('picodevCtf.launch');
+    assert.strictEqual(opened.at(-1), 'https://ctf.test/cours/gpio');
+    assert.strictEqual(plays().length, 8);
+
     await exec('picodevCtf.signOut');
     assert.strictEqual(tokenOf('DELETE /api/device'), mock.PLAYER);
     assert.ok(!m.state.players.has(mock.PLAYER));
@@ -525,7 +595,7 @@ exports.run = async () => {
     assert.ok(!fake().includes('M4N5P6Q7') && !fake().includes('T8V9W0X1'), 'a sign-in code went to picodev');
 
     // the player's token: only on the contract's routes, never in an address or a body
-    const ROUTES = /^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|DELETE \/api\/device)$/;
+    const ROUTES = /^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|POST \/api\/play|DELETE \/api\/device)$/;
     const carried = reqs().filter((r) => r.headers['x-ctf-player-token']);
     assert.ok(carried.length > 10);
     assert.deepStrictEqual(carried.map((r) => `${r.method} ${r.url}`).filter((x) => !ROUTES.test(x)), []);

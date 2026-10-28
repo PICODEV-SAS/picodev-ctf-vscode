@@ -40,7 +40,7 @@
   "walkthrough.docker.svg": "media/walkthrough/en/docker.svg",
   "walkthrough.docker.alt": "Before playing: install Docker, then the Dev Containers extension (Install, in the Extensions view).",
   "walkthrough.launch.title": "Start a game",
-  "walkthrough.launch.description": "Pick a challenge in the catalogue: it opens on the site, where you sign in and start the game with \"use my machine\" (credits and payment stay on the site).\n[Start a game](command:picodevCtf.launch)",
+  "walkthrough.launch.description": "Pick a challenge in the catalogue. VS Code signed in, in a challenge's container: confirm, and the game opens and is joined from here, the Regarder page beside. Otherwise it opens on the site, where you start the game with \"use my machine\" (credits and payment stay on the site).\n[Start a game](command:picodevCtf.launch)",
   "walkthrough.launch.svg": "media/walkthrough/en/launch.svg",
   "walkthrough.launch.alt": "In the Picodev CTF view, Actions: click Start a game, pick a challenge, then on the site choose On your machine and open the game.",
   "walkthrough.open.title": "Open the project in its container",

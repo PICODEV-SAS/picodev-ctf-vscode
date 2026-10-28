@@ -2,6 +2,20 @@
 
 Picodev CTF for VS Code, newest first. A version is a `vX.Y.Z` tag of this repository.
 
+## 0.5.0
+
+- *Start a game* from VS Code (J8b L4), signed in, in a window that has `picodev`: "Launch <title>?"
+  (free or paying, from the catalogue's `access`), then `POST /api/play` with the player's token and
+  `picodev login <agent_code>` at once (execFile, no shell). The code stays in a local variable,
+  never shown, kept or logged, and that login's output is never shown or logged. A failed login
+  leaves the game open: *Resume on the game screen* or *Abandon*, never a second `/api/play`.
+  Without `picodev`, the starter project of the challenge's family is offered first; not signed in,
+  or a course: the site, as before. The service's refusals: not enough credits (*Buy credits* opens
+  `<address>/credits`), a game already open (resume or abandon it), the token's hourly cap and the
+  day's turns (one message each), a challenge played on the site only.
+- After any successful `picodev login` (a typed code, a join link, a launch), the Regarder page
+  opens beside on its own; *Watch the game* stays in *Actions* while the game is open.
+
 ## 0.4.0
 
 - VS Code's sign-in (J8b L3): *Sign in* opens the site's profile page, whose "VS Code" card gives a

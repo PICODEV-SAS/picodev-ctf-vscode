@@ -2,7 +2,7 @@
   "name": "picodev-ctf",
   "displayName": "Picodev CTF",
   "description": "Play Picodev CTF challenges from VS Code (join, build, send to the bench, watch the game) and write challenges (author tools).",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "picodev",
   "icon": "media/logo.png",
   "galleryBanner": {

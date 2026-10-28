@@ -16,7 +16,9 @@ const TOKEN = /^ctfa_[A-Za-z0-9_-]{20,59}$/;
 const PLAYER_TOKEN = /^ctfp_[A-Za-z0-9_-]{43}$/;
 // the contract's closed list: the only requests that carry the player's token
 const PLAYER_ROUTES = new RegExp('^(GET /api/me/(courses|games)|POST /api/me/courses/[a-z0-9-]+/read|GET /api/games/\\d+'
-  + '|POST /api/games/\\d+/(hints/\\d+|close)|DELETE /api/device)$');
+  + '|POST /api/games/\\d+/(hints/\\d+|close)|POST /api/play|DELETE /api/device)$');
+// a challenge's platform: the family of its starter project and container (the service's play.FAMILIES)
+const FAMILY: Record<string, string> = { nano: 'avr', esp32: 'esp32', stm32: 'stm32', nrf52: 'nrf52' };
 const MAX_POLLS = 120; // ten minutes of draft_run at one every 5 s
 const STATUS_MS = 60_000;
 
@@ -77,6 +79,8 @@ const MESSAGES: Record<string, () => string> = {
   no_game: () => t('No game here: join one first.'),
   bad_watch: () => t('picodev watch gave no spectator link of this address.'),
   site_password: () => t('The site\'s password was refused.'),
+  token_play_limit: () => t('VS Code has started its games of the hour (5, 2 of them paying): wait a little, or start this one on the site.'),
+  turns_per_day: () => t('No turn left today: come back tomorrow.'),
 };
 
 function fail(e: unknown) {
@@ -396,14 +400,18 @@ async function login(code?: string): Promise<number | string | undefined> {
   const r = await picodev(args, cwd(), await playerEnv(), 120_000);
   if (r.code === 'ENOENT') return void (await noPicodev());
   log(`$ picodev login …\n${r.stdout}${r.stderr}`);
-  if (r.code === 0) {
-    setPending();
-    void vscode.window.showInformationMessage(t('Joined the game.'));
-  } else {
-    void vscode.window.showErrorMessage(t('picodev login failed: {0}', r.stderr.trim().split('\n').pop() ?? String(r.code)));
-  }
+  if (r.code === 0) return joined().then(() => 0);
+  void vscode.window.showErrorMessage(t('picodev login failed: {0}', r.stderr.trim().split('\n').pop() ?? String(r.code)));
   await refreshStatus();
   return r.code;
+}
+
+/** After a successful picodev login (a code typed, a join link, a launch): the game's Regarder page opens beside. */
+async function joined(): Promise<void> {
+  setPending();
+  void vscode.window.showInformationMessage(t('Joined the game.'));
+  await refreshStatus();
+  await guarded(watch)();
 }
 
 /**
@@ -609,12 +617,13 @@ async function siteCall(method: string, p: string, body?: object, token?: string
     if (res.status === 401 && token && detail === 'player_token_required' && (await secrets.get(playerKey(origin))) === token) {
       await secrets.delete(playerKey(origin));
     }
-    throw new CtfError(detail ?? `http_${res.status}`, `http_${res.status}`);
+    // a 409's open game, for its game screen or its close
+    throw Object.assign(new CtfError(detail ?? `http_${res.status}`, `http_${res.status}`), { game: json?.game });
   }
 }
 
-/** Lancer une partie: the catalogue's challenges and courses in one search; the game opens on the site. */
-async function launch(): Promise<string | undefined> {
+/** Lancer une partie: the catalogue's challenges and courses in one search; signed in, a challenge opens from here (play). */
+async function launch(): Promise<string | number | undefined> {
   const origin = settingUrl();
   const cat = await siteCall('GET', '/api/catalogue');
   const list = (x: unknown): any[] => (Array.isArray(x) ? x : []);
@@ -625,6 +634,7 @@ async function launch(): Promise<string | undefined> {
         .filter((x) => typeof x === 'string' && x).join(' · '),
       detail: String(titleOf(c.summary) ?? ''),
       url: `${origin}/defis/${c.slug}?poste=machine&retour=vscode`,
+      challenge: c,
     })),
     ...list(cat?.courses).filter((c) => slugOf(c?.slug)).map((c) => ({
       label: String(titleOf(c.title) || c.slug),
@@ -632,6 +642,7 @@ async function launch(): Promise<string | undefined> {
         Number.isInteger(c.reading_minutes) ? `${c.reading_minutes} min` : ''].filter(Boolean).join(' · '),
       detail: String(titleOf(c.summary) ?? ''),
       url: `${origin}/cours/${c.slug}`,
+      challenge: undefined,
     })),
   ];
   const pick = await vscode.window.showQuickPick(items, {
@@ -641,8 +652,89 @@ async function launch(): Promise<string | undefined> {
     matchOnDetail: true,
   });
   if (!pick) return;
+  const token = pick.challenge && (await playerToken());
+  if (token) return play(pick.challenge, token);
   await vscode.env.openExternal(vscode.Uri.parse(pick.url));
   return pick.url;
+}
+
+/**
+ * Signed in: the game opens from here (POST /api/play, "my machine"), then picodev login with its code at once. The
+ * code lives in this function only: never shown, kept or logged, and this login's output is never shown or logged.
+ */
+async function play(c: any, token: string): Promise<number | undefined> {
+  const origin = settingUrl();
+  const title = String(titleOf(c.title) || c.slug);
+  if (hasPicodev === undefined) await refreshStatus();
+  if (!hasPicodev) {
+    const open = t('Open the starter project');
+    if ((await vscode.window.showWarningMessage(
+      t('{0} is played from its starter project\'s container, where the picodev command is: open it, then start the game from there.', title),
+      open)) === open) await openStarter(FAMILY[c.platform]);
+    return;
+  }
+  const yes = t('Launch');
+  if ((await vscode.window.showWarningMessage(t('Launch {0}?', title), {
+    modal: true,
+    detail: c.access === 'credits' ? t('A paying challenge: its turns take credits from your balance.') : t('A free challenge.'),
+  }, yes)) !== yes) return;
+  let r: any;
+  try {
+    r = await siteCall('POST', '/api/play', { challenge: c.slug }, token);
+  } catch (e) {
+    return void (await playRefused(e, c, token));
+  }
+  if (!Number.isSafeInteger(r?.game)) throw new CtfError('bad_response');
+  const code = normCode(r.agent_code);
+  const ran = code && (await picodev(loginArgs(code, origin), cwd(), await playerEnv(), 120_000));
+  if (ran && ran.code === 0) {
+    log(t('Game of {0} opened and joined.', c.slug));
+    await joined();
+  } else {
+    log(t('Game of {0} opened; picodev login failed.', c.slug)); // a fixed line: never the login's output
+    await openGame(t('The game of {0} is open, but joining it from here failed.', title), c.slug, r.game, token);
+  }
+  return r.game;
+}
+
+/** POST /api/play's refusals that call for a choice; the others go to fail(). */
+async function playRefused(e: unknown, c: any, token: string): Promise<unknown> {
+  if (!(e instanceof CtfError)) throw e;
+  const origin = settingUrl();
+  if (e.code === 'credits_required') {
+    const buy = t('Buy credits');
+    const r = await vscode.window.showWarningMessage(t('Not enough credits'), {
+      modal: true, detail: t('Your balance does not cover one turn of this challenge.'),
+    }, buy);
+    return r === buy && vscode.env.openExternal(vscode.Uri.parse(`${origin}/credits`));
+  }
+  if (e.code === 'game_open' || e.code === 'paying_game_open') {
+    const id = (e as any).game;
+    // a paying game open on another challenge: its game screen, found in the player's games
+    const games = e.code === 'game_open' ? [] : await siteCall('GET', '/api/me/games', undefined, token).catch(() => []);
+    const slug = slugOf((Array.isArray(games) ? games : []).find((g) => g?.game === id)?.challenge) ?? c.slug;
+    return openGame(e.code === 'game_open' ? t('A game of this challenge is already open.') : t('A paying game is already open: one at a time.'),
+      slug, id, token);
+  }
+  if (e.code === 'agent_unavailable') {
+    const open = t('Open the challenge on the site');
+    const r = await vscode.window.showWarningMessage(t('This challenge is played on the site.'), { modal: true }, open);
+    return r === open && vscode.env.openExternal(vscode.Uri.parse(`${origin}/defis/${c.slug}`));
+  }
+  throw e;
+}
+
+/** A game open on the site that this window has not joined: resumed on its game screen (its code is there), or abandoned. */
+async function openGame(text: string, slug: string, id: unknown, token: string): Promise<unknown> {
+  const resume = t('Resume on the game screen');
+  const quit = t('Abandon');
+  const r = await vscode.window.showWarningMessage(text, { modal: true }, resume, ...(Number.isSafeInteger(id) ? [quit] : []));
+  if (r === resume) return vscode.env.openExternal(vscode.Uri.parse(`${settingUrl()}/defis/${slug}`));
+  if (r !== quit) return;
+  await siteCall('POST', `/api/games/${id}/close`, undefined, token);
+  void vscode.window.showInformationMessage(t('Game abandoned.'));
+  await refreshStatus();
+  return id;
 }
 
 // --- Player's sign-in ----------------------------------------------------------------------------------------------
@@ -1107,7 +1199,7 @@ export function activate(context: vscode.ExtensionContext) {
     handleUri: (uri: vscode.Uri) => guarded(handleUri)(uri),
     views,
     watchHtml: () => watchPanel?.webview.html,
-    noPicodev: () => (hasPicodev = false), // a window outside a challenge's container
+    hasPicodev: (v: boolean) => (hasPicodev = v), // false: a window outside a challenge's container
   } : { extendMarkdownIt };
 }
 

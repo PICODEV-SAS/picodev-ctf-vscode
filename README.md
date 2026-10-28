@@ -69,7 +69,7 @@ commande `picodev` du conteneur, sans shell et avec des arguments vérifiés :
 
 | Action | Ce qu'elle fait |
 |---|---|
-| *Lancer une partie* | Cherche dans le catalogue du site (défis et cours ensemble ; tapez `défi`, `cours`, une plateforme ou des points pour filtrer) et ouvre le défi sur le site, où l'on se connecte et ouvre la partie avec « utiliser ma machine ». |
+| *Lancer une partie* | Cherche dans le catalogue du site (défis et cours ensemble ; tapez `défi`, `cours`, une plateforme ou des points pour filtrer). VS Code connecté, dans le conteneur : « Lancer <défi> ? » (gratuit ou payant), puis la partie s'ouvre en mode « ma machine » et `picodev login` la rejoint aussitôt, sans code à recopier. Sans connexion, ou pour un cours : le site, où l'on ouvre la partie avec « utiliser ma machine ». |
 | *Rejoindre une partie* | `picodev login <code>` avec le code de 8 caractères de l'écran de jeu. |
 | *Compiler* | `picodev build` ; les lignes `fichier:ligne:col: error:` vont dans le panneau Problèmes, effacées à la compilation réussie suivante. |
 | *Envoyer au banc* | `picodev send` : compile et envoie au banc de la partie (aussi en bouton dans le titre de l'éditeur). |
@@ -93,7 +93,9 @@ ouvre une nouvelle fenêtre : y cliquer de nouveau « Revenir dans VS Code » su
 
 **Voir la partie** est la seule vue web de l'extension : un cadre de la page `/regarder` du site, à
 l'adresse `picodevCtf.url`, et rien d'autre (aucun script de l'extension, politique de sécurité
-stricte). Avec une image plus ancienne sans `picodev watch`, une notification le dit.
+stricte). Elle s'ouvre d'elle-même à côté dès qu'un `picodev login` a réussi (code saisi, lien
+« Revenir dans VS Code » ou *Lancer une partie*). Avec une image plus ancienne sans `picodev watch`,
+une notification le dit.
 
 Sans `picodev` (VS Code hors du conteneur), l'extension propose d'ouvrir le projet de départ de la
 famille dans VS Code.
@@ -104,10 +106,17 @@ suivre par « Revenir dans VS Code » (`vscode://picodev.picodev-ctf/connect?cod
 connecte jamais tout seul : VS Code demande « Se connecter à <adresse> ? », puis montre le pseudonyme
 du compte, à comparer avec celui de la carte ; la connexion n'est gardée (et ne remplace la
 précédente) qu'après cette confirmation. VS Code ne voit ni le mot de passe ni la clé d'accès : il
-garde un jeton `ctfp_…` qui ne sert qu'aux cours (avancement), aux indices et à l'abandon de ses
-parties, envoyé dans l'en-tête `X-CTF-Player-Token` à ces seules routes. *Se déconnecter* le révoque
+garde un jeton `ctfp_…` qui ne sert qu'aux cours (avancement), à l'ouverture d'une partie, aux
+indices et à l'abandon de ses parties, envoyé dans l'en-tête `X-CTF-Player-Token` à ces seules routes. *Se déconnecter* le révoque
 sur le site, puis l'efface. Un jeton expiré ou révoqué sur le site est effacé à la première requête
 refusée, et VS Code propose de se reconnecter.
+
+**Lancer depuis VS Code.** Le code de la partie ne passe que de la réponse du site à `picodev login`
+(processus enfant, sans shell) : jamais affiché, gardé ni journalisé, pas plus que la sortie de ce
+`picodev login`. S'il échoue, la partie reste ouverte : *Reprendre sur l'écran de jeu* ou
+*Abandonner*. Le site répond aussi « Plus assez de crédits » (*Acheter des crédits* ouvre la page
+d'achat), « une partie est déjà ouverte » (la reprendre ou l'abandonner), les plafonds (5 parties
+par heure depuis VS Code, dont 2 payantes ; tours du jour), ou « ce défi se joue sur le site ».
 
 **Cours.** La vue *Cours* liste les cours du catalogue, ceux déjà lus cochés quand VS Code est
 connecté. Un cours s'ouvre dans l'aperçu Markdown de VS Code (document `picodev-course:`), tenu

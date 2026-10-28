@@ -40,7 +40,7 @@
   "walkthrough.docker.svg": "media/walkthrough/fr/docker.svg",
   "walkthrough.docker.alt": "Avant de jouer : installez Docker, puis l'extension Dev Containers (Installer, dans la vue Extensions).",
   "walkthrough.launch.title": "Lancer une partie",
-  "walkthrough.launch.description": "Choisissez un défi dans le catalogue : il s'ouvre sur le site, où vous vous connectez et ouvrez la partie avec « utiliser ma machine » (crédits et paiement restent sur le site).\n[Lancer une partie](command:picodevCtf.launch)",
+  "walkthrough.launch.description": "Choisissez un défi dans le catalogue. VS Code connecté, dans le conteneur d'un défi : confirmez, et la partie s'ouvre et se rejoint d'ici, la page Regarder à côté. Sinon il s'ouvre sur le site, où vous ouvrez la partie avec « utiliser ma machine » (crédits et paiement restent sur le site).\n[Lancer une partie](command:picodevCtf.launch)",
   "walkthrough.launch.svg": "media/walkthrough/fr/launch.svg",
   "walkthrough.launch.alt": "Dans la vue Picodev CTF, Actions : cliquez Lancer une partie, choisissez un défi, puis sur le site choisissez Sur votre poste et ouvrez la partie.",
   "walkthrough.open.title": "Ouvrir le projet dans son conteneur",

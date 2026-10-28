@@ -31,6 +31,7 @@ async function start() {
     claimable: true, // false: a site without the claim (404 without unknown_code)
     redirect: '', // a route answered by a redirect to /stolen
     lintErrors: [], // what draft_lint answers
+    play: [201, { game: 14, agent_code: AGENT_CODE }], // what POST /api/play answers
   };
   const row = (d) => ({ id: d.id, slug: d.slug, state: d.state, revision: d.revision, title: { fr: 'T', en: 'T' }, with_agent: d.with_agent,
     solved_revision: d.solved_revision ?? null });
@@ -106,14 +107,15 @@ async function start() {
       }
       const player = req.headers['x-ctf-player-token'];
       const route = `${req.method} ${req.url}`;
-      if (/^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|DELETE \/api\/device)$/.test(route)) {
+      if (/^(GET \/api\/me\/(courses|games)|POST \/api\/me\/courses\/[a-z0-9-]+\/read|GET \/api\/games\/\d+|POST \/api\/games\/\d+\/(hints\/\d+|close)|POST \/api\/play|DELETE \/api\/device)$/.test(route)) {
         if (state.fail401) return json(401, { detail: 'not_signed_in' });
         if (!state.players.has(player)) return json(401, { detail: 'player_token_required' });
         if (route === 'GET /api/me/courses') return json(200, { read: [...state.read] });
         if (route === 'GET /api/me/games') return json(200, GAMES);
         if (route === 'GET /api/games/12') return json(200, { game: 12, challenge: 'blink-1', open: true, hints: [1], submissions: [] });
         if (route === 'POST /api/games/12/hints/2') return json(200, { text: 'Look at <b>pin 13</b> and [here](command:foo).', cost: 20 });
-        if (route === 'POST /api/games/12/close' || route === 'DELETE /api/device') {
+        if (route === 'POST /api/play') return json(...state.play);
+        if (/^POST \/api\/games\/(12|13|14)\/close$/.test(route) || route === 'DELETE /api/device') {
           if (route === 'DELETE /api/device') state.players.delete(player);
           res.writeHead(204);
           return res.end();
@@ -183,6 +185,7 @@ const GAMES = [
 ];
 
 // the game and sign-in codes the suite uses: never in a file, a setting, a log or a view
-const CODES = ['AB12CD34', 'ab12cd34', 'ZX90A7K3', 'zx-90', 'K7M2P9QR', ...Object.keys(CONNECT)];
+const AGENT_CODE = 'H3J4K5M6'; // POST /api/play's agent_code
+const CODES = [AGENT_CODE, 'AB12CD34', 'ab12cd34', 'ZX90A7K3', 'zx-90', 'K7M2P9QR', ...Object.keys(CONNECT)];
 
 module.exports = { start, TOKEN, PLAYER, PLAYER2, CODES };
