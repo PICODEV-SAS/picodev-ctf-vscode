@@ -173,6 +173,10 @@ const COURSE = {
       '',
       '[run](command:foo) [code](vscode://x) [file](file:///etc/passwd) [js](javascript:alert(1)) [other](https://x.test/a)',
       '[site](https://ctf.test/cours/gpio) [rel](02-next.md) <https://x.test/auto>',
+      '',
+      // courses/uart-bavard/01-une-liaison-sans-horloge.fr.md: a callout, as the site draws it
+      '> [!takeaway] À retenir',
+      '> TX vers RX, RX vers TX, masses reliées. Les deux côtés doivent être configurés avec **le même débit et le même format** avant de communiquer.',
     ].join('\n') } },
     { id: 'more', order: 2, fr: { title: 'Suite', version: 1, body: 'Done.' }, en: { title: 'More', version: 1, body: 'Done.' } },
   ],

@@ -2,6 +2,12 @@
 
 Picodev CTF for VS Code, newest first. A version is a `vX.Y.Z` tag of this repository.
 
+## 0.5.1
+
+- Courses in the preview render like the site: a callout (`> [!takeaway] À retenir`) shows its title
+  in bold leading its text, no longer `[!takeaway] À retenir` run into the first sentence, and a line
+  break in a chapter is never a `<br>`, whatever `markdown.preview.breaks` says.
+
 ## 0.5.0
 
 - *Start a game* from VS Code (J8b L4), signed in, in a window that has `picodev`: "Launch <title>?"

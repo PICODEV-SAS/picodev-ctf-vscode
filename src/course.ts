@@ -6,6 +6,7 @@ import { slugOf } from './player';
 
 export const SCHEME = 'picodev-course';
 const IMAGE = /^img\/([A-Za-z0-9._-]+)$/;
+const CALLOUT = /^\[!(takeaway|exercise|warning|note)\][ \t]*(.*)$/; // Markdown.tsx's, on the text before the line break
 
 /** The course of a picodev-course document, from its path /<slug>.md. */
 export const courseSlug = (path: string) => slugOf(path.match(/^\/([^/]+)\.md$/)?.[1]);
@@ -50,11 +51,11 @@ export function coursePlugin(md: any, origin: () => string): any {
     }
     return { origin: o, slug: courseSlug(doc.path) ?? '' };
   };
-  const wrap = (name: string, mine: (tokens: any[], idx: number, c: { origin: string; slug: string }) => string | undefined) => {
+  const wrap = (name: string, mine: (tokens: any[], idx: number, c: { origin: string; slug: string }, env: any) => string | undefined) => {
     const orig = rules[name];
     rules[name] = (tokens: any[], idx: number, opts: any, env: any, self: any) => {
       const c = course(env);
-      const own = c && mine(tokens, idx, c);
+      const own = c && mine(tokens, idx, c, env);
       if (own !== undefined) return own;
       return orig ? orig(tokens, idx, opts, env, self) : self.renderToken(tokens, idx, opts);
     };
@@ -78,5 +79,20 @@ export function coursePlugin(md: any, origin: () => string): any {
     const alt = esc(String(tok.content ?? ''));
     return url ? `<img src="${esc(url)}" alt="${alt}">` : alt;
   });
+  // "> [!takeaway] Title" (Markdown.tsx's callouts): the blockquote's first text is the marker, shown as its title in
+  // bold leading the text. The marked token is kept per render (env), never written in the cached tokens.
+  const callout = new WeakMap<object, any>();
+  wrap('blockquote_open', (tokens, idx, _c, env) => {
+    const first = tokens[idx + 1]?.type === 'paragraph_open' ? tokens[idx + 2]?.children?.[0] : undefined;
+    if (first?.type === 'text' && CALLOUT.test(first.content)) callout.set(env, first);
+    return undefined;
+  });
+  const title = (tok: any) => tok.content.match(CALLOUT)[2];
+  wrap('text', (tokens, idx, _c, env) => {
+    if (tokens[idx] !== callout.get(env)) return undefined;
+    return title(tokens[idx]) ? `<strong>${esc(title(tokens[idx]))}</strong>` : '';
+  });
+  // the site's CommonMark: a line break in the source is a space, whatever markdown.preview.breaks says
+  wrap('softbreak', (tokens, idx, _c, env) => (tokens[idx - 1] === callout.get(env) && !title(tokens[idx - 1]) ? '' : '\n'));
   return md;
 }

@@ -455,6 +455,18 @@ exports.run = async () => {
     assert.match(rendered, /&lt;div onclick=/);
     assert.match(rendered, /&lt;b&gt;bold&lt;\/b&gt;/);
     assert.match(rendered, /tracker/);
+    // a callout: its title in bold leads its text, as on the site (Markdown.tsx), not "[!takeaway] À retenir TX…" in one run
+    assert.match(rendered, /<blockquote[^>]*>\s*<p[^>]*><strong>À retenir<\/strong>\s+TX vers RX, RX vers TX/, rendered);
+    assert.doesNotMatch(rendered, /\[!takeaway\]/, rendered);
+    // a line break in the source is never a <br>, whatever markdown.preview.breaks says: the site's CommonMark
+    const md = vscode.workspace.getConfiguration('markdown.preview');
+    await md.update('breaks', true, vscode.ConfigurationTarget.Global);
+    try {
+      assert.doesNotMatch(await exec('markdown.api.render', doc), /<br/);
+      assert.match(await exec('markdown.api.render', await vscode.workspace.openTextDocument({ language: 'markdown', content: 'a\nb' })), /<br/);
+    } finally {
+      await md.update('breaks', undefined, vscode.ConfigurationTarget.Global);
+    }
     // the same text in another document: the preview as it was
     const other = await exec('markdown.api.render', await vscode.workspace.openTextDocument({ language: 'markdown', content: doc.getText() }));
     assert.match(other, /<b>bold<\/b>/);
