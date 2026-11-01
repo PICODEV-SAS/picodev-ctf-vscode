@@ -2,6 +2,13 @@
 
 Picodev CTF for VS Code, newest first. A version is a `vX.Y.Z` tag of this repository.
 
+## 0.5.2
+
+- Course links: a chapter's relative links `/cours/<slug>[/<chapter>]`, `/defis/<slug>` and
+  `/parcours/<slug>` open on the site, any other relative link still drops to its text. The game view
+  lists the challenge's courses (`courses`, or the single `course` of an older service), each opening
+  in the preview.
+
 ## 0.5.1
 
 - Courses in the preview render like the site: a callout (`> [!takeaway] À retenir`) shows its title

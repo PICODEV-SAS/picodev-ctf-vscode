@@ -35,6 +35,12 @@ export function linkOk(href: string, origin: string): boolean {
   }
 }
 
+// a chapter's links to the site (contract v0.21): a course, one of its chapters, a challenge, a path
+const SITE = /^\/(cours\/[a-z0-9-]+(\/[a-z0-9-]+)?|defis\/[a-z0-9-]+|parcours\/[a-z0-9-]+)$/;
+
+/** A relative link to the site, rebuilt on the pinned origin, else undefined. */
+export const siteHref = (href: string, origin: string): string | undefined => (origin && SITE.test(href) ? origin + href : undefined);
+
 /** The plugin; `origin()` is picodevCtf.url's origin, or throws when the setting is not a valid address. */
 export function coursePlugin(md: any, origin: () => string): any {
   const rules = md.renderer.rules;
@@ -60,13 +66,19 @@ export function coursePlugin(md: any, origin: () => string): any {
       return orig ? orig(tokens, idx, opts, env, self) : self.renderToken(tokens, idx, opts);
     };
   };
-  const dropped = (tok: any, c: { origin: string }) => !c.origin || !linkOk(String(tok.attrGet('href') ?? ''), c.origin);
+  const href = (tok: any) => String(tok.attrGet('href') ?? '');
+  const dropped = (tok: any, c: { origin: string }) => !c.origin || (!siteHref(href(tok), c.origin) && !linkOk(href(tok), c.origin));
   // no HTML: shown as its text
   wrap('html_block', (tokens, idx) => esc(tokens[idx].content));
   wrap('html_inline', (tokens, idx) => esc(tokens[idx].content));
-  // a link elsewhere (command:, vscode:, file:, another site, a relative one): its text only. Links do not nest, so a
+  // /cours/…, /defis/…, /parcours/…: written on the pinned origin (the tokens are cached, so not in them). A link
+  // elsewhere (command:, vscode:, file:, another site, any other relative one): its text only. Links do not nest, so a
   // link_close's link is the last link_open before it.
-  wrap('link_open', (tokens, idx, c) => (dropped(tokens[idx], c) ? '' : undefined));
+  wrap('link_open', (tokens, idx, c) => {
+    const site = siteHref(href(tokens[idx]), c.origin);
+    if (site) return `<a href="${esc(site)}">`;
+    return dropped(tokens[idx], c) ? '' : undefined;
+  });
   wrap('link_close', (tokens, idx, c) => {
     for (let j = idx - 1; j >= 0; j--) if (tokens[j].type === 'link_open') return dropped(tokens[j], c) ? '' : undefined;
     return undefined;

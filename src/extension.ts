@@ -981,7 +981,29 @@ function actionItems(): vscode.TreeItem[] {
   return items;
 }
 
-function gameItems(): vscode.TreeItem[] {
+let gameCourses: { challenge: string; courses: Promise<{ slug: string; label: string }[]> } | undefined;
+
+/** The courses of the game's challenge, from GET /api/challenges/{slug} (public, no token): its `courses`, else the
+ *  single `course` of a service before contract v0.21; read once per challenge. */
+function challengeCourses(challenge: string): Promise<{ slug: string; label: string }[]> {
+  if (gameCourses?.challenge !== challenge) {
+    const courses = siteCall('GET', `/api/challenges/${challenge}`).then((c) => {
+      const list: any[] = Array.isArray(c?.courses) ? c.courses : slugOf(c?.course) ? [{ slug: c.course }] : [];
+      return list.filter((x) => slugOf(x?.slug)).map((x) => ({
+        slug: x.slug as string,
+        label: [String(titleOf(x.title) || x.slug), String(titleOf(x.chapter_title) || '')].filter(Boolean).join(' — '),
+      }));
+    }, (e) => {
+      log(`! challenge courses: ${e instanceof CtfError ? e.code : e}`);
+      gameCourses = undefined; // read again at the next render
+      return [];
+    });
+    gameCourses = { challenge, courses };
+  }
+  return gameCourses.courses;
+}
+
+async function gameItems(): Promise<vscode.TreeItem[]> {
   if (!game) return []; // the view's welcome says what to do
   const left = minutesLeft(game);
   const items = [nextItem(nextStep()), item(t('Challenge: {0}', game.challenge || '…'), 'target', 'picodevCtf.gameScreen')];
@@ -989,6 +1011,8 @@ function gameItems(): vscode.TreeItem[] {
     items.push(item(game.levels ? t('Level {0}/{1}', game.level + 1, game.levels) : t('Level {0}', game.level + 1), 'layers'));
   }
   if (left !== undefined) items.push(item(t('{0} min left', left), 'watch'));
+  const slug = slugOf(game.challenge);
+  for (const c of slug ? await challengeCourses(slug) : []) items.push(item(t('Course: {0}', c.label), 'book', 'picodevCtf.openCourse', [c.slug]));
   return items;
 }
 

@@ -267,6 +267,10 @@ exports.run = async () => {
     let game = await view('game');
     assert.deepStrictEqual(game.slice(0, 3), ['Next: hand in the flag on the game screen', 'Challenge: blink-1', 'Level 1/3']);
     assert.match(game[3], /^1[01] min left$/);
+    // the challenge's courses, from GET /api/challenges/blink-1 (no token), each opening the course
+    assert.deepStrictEqual(game.slice(4), ['Course: GPIO', 'Course: UART — Baud rate']);
+    assert.deepStrictEqual((await api.views.game.getChildren()).slice(4).map((i) => [i.command.command, ...i.command.arguments]),
+      [['picodevCtf.openCourse', 'gpio'], ['picodevCtf.openCourse', 'uart']]);
     const [next] = await api.views.game.getChildren();
     assert.deepStrictEqual(next.label.highlights, [[0, next.label.label.length]]);
     const actions = await view('actions');
@@ -449,7 +453,9 @@ exports.run = async () => {
     const rendered = await exec('markdown.api.render', doc);
     const attrs = (re) => [...rendered.matchAll(re)].map((x) => x[1]);
     assert.deepStrictEqual(attrs(/<img[^>]*\ssrc="([^"]*)"/g), ['https://ctf.test/api/courses/gpio/img/pins.png'], rendered);
-    assert.deepStrictEqual(attrs(/\shref="([^"]*)"/g), ['https://ctf.test/cours/gpio'], rendered);
+    assert.deepStrictEqual(attrs(/\shref="([^"]*)"/g), ['https://ctf.test/cours/gpio', 'https://ctf.test/cours/gpio',
+      'https://ctf.test/cours/gpio/intro', 'https://ctf.test/defis/blink-1', 'https://ctf.test/parcours/debut'], rendered);
+    assert.match(rendered, /\bup\b.*\badm\b.*\bq\b/s, 'a dropped link keeps its text');
     // (an empty <div data-line> is the preview's own line marker around a block)
     assert.doesNotMatch(rendered, /<b>|<div[^>]*onclick|<a [^>]*(command|vscode|file|javascript):|src="https:\/\/x/, rendered);
     assert.match(rendered, /&lt;div onclick=/);
@@ -619,6 +625,14 @@ exports.run = async () => {
       assert.ok(!shown.includes(s) && !api.logText().includes(s) && !JSON.stringify(config.inspect('url')).includes(s), s);
     }
     assert.ok(!api.logText().includes('sess_1'), 'the spectator link was logged');
+
+    // --- the game view: a challenge without course, then one of a service before v0.21 (its single `course`)
+    fakeSet('status', { out: JSON.stringify({ challenge: 'uart-2' }) });
+    await exec('picodevCtf.status');
+    assert.ok(!(await view('game')).some((l) => l.startsWith('Course')));
+    fakeSet('status', { out: JSON.stringify({ challenge: 'old-1' }) });
+    await exec('picodevCtf.status');
+    assert.deepStrictEqual((await view('game')).filter((l) => l.startsWith('Course')), ['Course: gpio']);
     console.log('suite: ok');
   } finally {
     await config.update('url', undefined, vscode.ConfigurationTarget.Global);

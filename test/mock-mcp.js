@@ -97,7 +97,8 @@ async function start() {
       }
       if (req.method === 'GET' && req.url === '/api/catalogue') return json(200, CATALOGUE);
       if (req.method === 'GET' && req.url === '/api/courses/gpio') return json(200, COURSE);
-      if (req.method === 'GET' && req.url === '/api/challenges/blink-1') return json(200, CHALLENGE);
+      const challenge = req.method === 'GET' && CHALLENGES[req.url.replace(/^\/api\/challenges\//, '')];
+      if (challenge) return json(200, challenge);
       if (req.method === 'POST' && req.url === '/api/device/claim') {
         if (!state.claimable) return json(404, { detail: 'Not Found' });
         const c = CONNECT[JSON.parse(body || '{}').code];
@@ -173,6 +174,8 @@ const COURSE = {
       '',
       '[run](command:foo) [code](vscode://x) [file](file:///etc/passwd) [js](javascript:alert(1)) [other](https://x.test/a)',
       '[site](https://ctf.test/cours/gpio) [rel](02-next.md) <https://x.test/auto>',
+      // contract v0.21: links to a course, a chapter, a challenge, a path; any other relative one dropped
+      '[c](/cours/gpio) [ch](/cours/gpio/intro) [d](/defis/blink-1) [p](/parcours/debut) [up](/cours/../admin) [adm](/admin) [q](/defis/blink-1?x=1)',
       '',
       // courses/uart-bavard/01-une-liaison-sans-horloge.fr.md: a callout, as the site draws it
       '> [!takeaway] À retenir',
@@ -181,8 +184,17 @@ const COURSE = {
     { id: 'more', order: 2, fr: { title: 'Suite', version: 1, body: 'Done.' }, en: { title: 'More', version: 1, body: 'Done.' } },
   ],
 };
-// GET /api/challenges/blink-1's hints, GET /api/me/games: two games, one of picodev status's challenge
-const CHALLENGE = { slug: 'blink-1', hints: [{ n: 1, title: 'Where', cost: 10 }, { n: 2, title: 'Which pin', cost: 20 }] };
+// GET /api/challenges/blink-1's hints and courses (contract v0.21), GET /api/me/games: two games, one of picodev
+// status's challenge
+const CHALLENGE = {
+  slug: 'blink-1', hints: [{ n: 1, title: 'Where', cost: 10 }, { n: 2, title: 'Which pin', cost: 20 }], course: 'gpio',
+  courses: [
+    { slug: 'gpio', title: { fr: 'Broches', en: 'GPIO' } },
+    { slug: 'uart', chapter: 'debit', title: { fr: 'UART', en: 'UART' }, chapter_title: { fr: 'Le débit', en: 'Baud rate' } },
+  ],
+};
+// uart-2: no course; old-1: a service before v0.21, its single course only
+const CHALLENGES = { 'blink-1': CHALLENGE, 'uart-2': { slug: 'uart-2', hints: [], course: null }, 'old-1': { slug: 'old-1', course: 'gpio' } };
 const GAMES = [
   { game: 12, challenge: 'blink-1', title: { fr: 'Clignote', en: 'Blink' }, platform: 'nano', hints_used: 1 },
   { game: 13, challenge: 'uart-2', title: { fr: 'UART', en: 'UART' }, platform: 'nano', hints_used: 0 },

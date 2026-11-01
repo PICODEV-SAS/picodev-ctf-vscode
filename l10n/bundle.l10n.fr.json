@@ -162,6 +162,7 @@
   "Abandon the game of {0}? It closes now.": "Abandonner la partie de {0} ? Elle se ferme tout de suite.",
   "Game abandoned.": "Partie abandonnée.",
   "Course": "Cours",
+  "Course: {0}": "Cours : {0}",
   "Sign VS Code in to keep your progress in the courses.": "Connectez VS Code pour garder votre avancement dans les cours.",
   "Course marked as read.": "Cours marqué comme lu.",
   "read": "lu",
